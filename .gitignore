@@ -79,3 +79,6 @@ puzzle_collections.txt
 # Release packaging output
 dist/
 release/
+
+# Python bytecode cache
+__pycache__/

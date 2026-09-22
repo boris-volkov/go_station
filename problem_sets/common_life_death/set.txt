@@ -1,0 +1,3 @@
+name=Common Life & Death
+id=1000000000
+source=common-life-and-death-problems.pdf

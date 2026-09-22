@@ -37,6 +37,7 @@ two apps built on it (`apps/`).
 | `apps/ogs_client/` | Online-go.com client — live play, puzzles, local KataGo analysis |
 | `games/` | Curated professional game library (SGF) |
 | `my_games/` | My own OGS game history — kept for reference, not example data |
+| `problem_sets/` | Problem books imported from PDFs, one folder per book |
 | `tools/` | Packaging and maintenance scripts |
 
 ## Building
@@ -182,6 +183,120 @@ usage rather than a fixed feature set, so this README is the full extent of
 its onboarding — a PlayStation controller is assumed for the on-screen
 control hints, though mouse and keyboard work throughout as well.
 
+### Importing a problem book from a PDF
+
+Go problem books typeset in LaTeX with the `igo` package draw their diagrams
+with a *font* — one glyph per intersection — so the position is real text in
+the PDF rather than a picture of a board. That makes a book directly
+importable: every stone reads back exactly, and the answer key at the back
+("(1) B1 D1 D2 H1 C1") gives the solution move for move.
+
+```bash
+pip install pymupdf
+python tools/import_problem_pdf.py common-life-and-death-problems.pdf \
+       --name "Common Life & Death" --rank 5
+```
+
+Each problem becomes one SGF in `problem_sets/<slug>/` — the diagram's corner
+crop placed on a full 19×19 board, with the answer as a judged solution line.
+Every problem is replayed under full Go rules before it is written; anything
+that doesn't replay (books do clip the occasional diagram, cutting a group off
+mid-shape) is reported and skipped rather than shipped broken. Add `--dry-run`
+to check a PDF without writing, `--report` to list what was skipped and why.
+
+The set then appears in the puzzle browser as its own pinned collection,
+above the OGS ones and alongside `[MY DRILLS]`, with per-problem solved
+tracking and the same progress colouring as an OGS collection. Nothing about
+it is specific to one book — point the tool at another `igo`-typeset PDF and
+it becomes a second collection.
+
+### Sharpening an imported set with KataGo
+
+A printed book gives one line per problem, so a wrong guess has nowhere to go,
+and the book's own moves are not always the best ones. `katago_annotate.py`
+fixes both without discarding what the book knows:
+
+```bash
+python tools/katago_annotate.py problem_sets/common_life_death --jobs 4
+```
+
+It grows refutation branches off every solver turn — a plausible losing move
+gets answered and explained instead of dropping you into free play — and
+flags book moves that give away a point or more. Roughly 80 minutes for a
+370-problem set on a mid-range GPU; SGFs are written as each problem finishes,
+and re-running re-derives from the book's main line, so an interrupted batch
+is safe to repeat.
+
+What it deliberately does *not* do is re-solve the problems. These diagrams
+are corner crops, so the enclosing wall is only watertight relative to the
+printed frame; on a real 19×19 the group can run out through a gap the book
+never had to draw. Left to itself the engine finds that escape, scores it
+well, and "corrects" a perfectly good answer. Three things keep it honest:
+
+- **Search wide, judge narrow.** Analysis runs over the problem dilated by a
+  ring (~50 points) so replies aren't banned and lines score correctly, but
+  candidates are filtered to the actual fight — the target group's liberties
+  and those of the white groups pressing on it — before anything is flagged.
+- **Never trust one search.** Point advice is re-measured at `--verify-visits`
+  (8000 by default) before it is written. Checked against a 1200-visit pass,
+  about a third of flags either shrank to nothing or reversed outright.
+- **Ignore winrate.** On an otherwise empty board it is pinned at 0.000. Only
+  `scoreLead` differences and group ownership carry any signal.
+
+### Drills for the standard corner shapes
+
+The corner shapes every player is told to memorise — the L group, the L+1 and
+L+2 groups, the bulky five, the rectangular six — make good drills, and typing
+them in by hand is both tedious and a good way to memorise a wrong answer.
+
+```bash
+python tools/corner_drills.py --out my_games/<you>/drills --verify
+```
+
+Each shape is sealed into a self-contained corner problem, solved exactly, and
+only then turned into a drill. The solver is a full search of the sealed
+region under Go rules rather than an engine: for eye spaces of this size that
+is cheap enough to be a proof instead of an opinion, so every move offered as
+correct provably reaches the goal, and every opponent reply in the tree
+provably has an answer. `--list` prints the positions and their sources;
+`--verify` replays every line under the rules and then has KataGo re-judge
+each one independently. Existing files are never overwritten without
+`--force`.
+
+Two things stop it shipping something untrue:
+
+- **The positions are sealed, not cropped.** Sensei's draws the open
+  formations with their escape routes open and a couple of distant stones
+  standing in for "white is strong outside" — fine for a diagram, useless for
+  a drill. Sealing only ever continues the wall the diagram already draws, so
+  the group ends up with the same room or more, and a shape whose openness is
+  not a wall one stone short of the edge is skipped rather than altered. The
+  tripod group is the clear case: its eye space genuinely runs out into the
+  open corner, so any enclosure of it is a different problem.
+- **The solver's answer is checked against Sensei's.** Every shape carries the
+  status the page states. If the solved status disagrees, the affected side is
+  reported and no drill is written for it, because a disagreement means either
+  the enclosure changed the shape or one of the two is wrong. Shapes whose
+  best line is a ko or a seki produce only the side that has a clean answer —
+  there is no move that is simply "right" in a ko, and the drill format has
+  nowhere to put one.
+
+`--check <dir>` runs the same two checks over drills that are already there,
+hand-made ones included. Besides replaying every line it re-judges each first
+move the drill presents as a *mistake*, which is the one error a replay can
+never catch: a line that is meant to end without a verdict looks fine however
+wrong it is, so a good move filed under "wrong" would otherwise sit there
+teaching the opposite of the truth.
+
+`--replies` controls how much opponent resistance each turn carries (2 by
+default); dropping it to 1 gives shorter drills, raising it covers more.
+
+Cost climbs steeply with the size of the eye space: six or seven points solve
+instantly, nine takes seconds, ten or eleven takes minutes. The L+2 group sits
+right at the edge and can exhaust the node budget, in which case it is
+reported as `UNKNOWN` and skipped rather than guessed at. Running one shape at
+a time (`--only <key>`) keeps the work already done if that happens.
+
 ## Source files
 
 | File | Purpose |
@@ -196,4 +311,7 @@ control hints, though mouse and keyboard work throughout as well.
 | `apps/go_viewer/main.cpp` | App loop, input handling, drill logic |
 | `apps/go_viewer/CMakeLists.txt` | Builds the `go_viewer` executable |
 | `apps/ogs_client/` | OGS networking, KataGo integration, puzzles, sound |
+| `tools/import_problem_pdf.py` | Imports a LaTeX/`igo` problem-book PDF into `problem_sets/` |
+| `tools/katago_annotate.py` | Adds KataGo refutation branches and point notes to an imported set |
+| `tools/corner_drills.py` | Solves the standard corner shapes exactly and writes them as drills |
 | `CMakeLists.txt` (repo root) | Top-level build — wires up `engine/` and both `apps/` |
