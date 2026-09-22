@@ -33,6 +33,39 @@ struct BoardLabel { int r = 0; int f = 0; char ch = 'A'; };
 // A colored dot drawn on an empty intersection (joseki continuation markers).
 struct PointMarker { int r = 0; int f = 0; SDL_Color color = {}; };
 
+// One row's styling in a sectioned popup menu. `heading` makes the row a
+// section label rather than a command: it is drawn in `color` at full strength,
+// gets extra space above it, and cannot be selected by mouse or pad. Command
+// rows use `color` as their resting tint and still turn ACCENT when highlighted,
+// so the selection stays the loudest thing on the panel.
+struct PopupStyle { SDL_Color color = {}; bool heading = false; };
+
+// ---------------------------------------------------------------------------
+// Bullseye guess scoring (go_viewer's GUESS MODE)
+//
+// Naming the pro's exact point is rare enough that an all-or-nothing guess is
+// mostly misses, which teaches nothing. Instead a guess scores by ring distance
+// from the move actually played, so "I knew it was that corner" earns credit:
+//
+//   ring 0 (the point itself)     10
+//   ring 1 (the 8 neighbours)      5
+//   ring 2 (the 16 points beyond)  1
+//   anything further               0
+//
+// Rings are Chebyshev (square) rather than Manhattan (diamond) distance, so each
+// ring is the square shell the heatmap cursor draws — what you see is what scores.
+constexpr int GUESS_RING_POINTS[3] = {10, 5, 1};
+constexpr int GUESS_MAX_POINTS     = GUESS_RING_POINTS[0];
+
+inline int guess_ring_dist(int r1, int f1, int r2, int f2) {
+    int dr = r1 - r2; if (dr < 0) dr = -dr;
+    int df = f1 - f2; if (df < 0) df = -df;
+    return dr > df ? dr : df;
+}
+inline int guess_points(int dist) {
+    return (dist >= 0 && dist < 3) ? GUESS_RING_POINTS[dist] : 0;
+}
+
 // Describes one node in the analysis tree for rendering (produced by ogs_client,
 // consumed by render_analysis_tree — a plain POD so renderer.hpp stays dependency-free).
 struct AnalysisTreeRenderNode {
@@ -64,6 +97,21 @@ public:
         bool  game_mode      = false;
         bool  guess_mode     = false;
         int   guess_score    = 0;
+        // Bullseye guessing: a guess scores by how close it lands to the move the pro
+        // actually played, so being in the right area is worth something even when the
+        // exact point is missed. See guess_points() for the rings.
+        int   guess_count       = 0;   // guesses made this session
+        int   guess_last_points = -1;  // points from the most recent guess, -1 = none yet
+        int   guess_last_dist   = -1;  // ring distance of that guess, -1 = none yet
+        // Bullseye heatmap: the point its rings are centred on, -1 = don't draw.
+        // Sourced from whatever that app uses to aim — go_viewer snaps it from the
+        // mouse, ogs_client passes its D-pad board cursor — so the engine draws the
+        // rings the same way for both without knowing which is which.
+        int   guess_heat_r      = -1;
+        int   guess_heat_f      = -1;
+        // Snap the software stone cursor onto guess_heat_r/f instead of letting it
+        // float at the raw pointer (go_viewer, where the mouse is what aims).
+        bool  cursor_snap_heat  = false;
         bool  chain_mode         = false;
         bool  free_mode          = false;   // demo mode: board only, no HUD labels
         int   active_board_size  = BOARD_SIZE;  // passed to get_board_view
@@ -160,6 +208,14 @@ public:
         // Stone removal overlay (STONE_REMOVAL phase only)
         const bool (*live_dead_stones)[MAX_BOARD_SIZE] = nullptr;  // greyed-out stones
         const int  (*live_ownership)[MAX_BOARD_SIZE]   = nullptr;  // territory: 1=black, -1=white
+        // Chinese-style fill view: territory (and cells vacated by dead stones) drawn
+        // as full stones of the owning color instead of small marker squares.
+        bool        live_ownership_fill    = false;
+        // Chinese-style area score for a filled board: how many points each colour
+        // holds once every territory point has become a stone. Drawn in the player
+        // panel in place of the clock. -1 = no count, panel unchanged.
+        int         live_area_black        = -1;
+        int         live_area_white        = -1;
         // KataGo move suggestions (GAME_OVER history review)
         const MoveSuggestion* live_suggestions        = nullptr;
         int                   live_suggestion_count   = 0;
@@ -194,6 +250,11 @@ public:
         // Square stone mode: board stones render as beveled tiles instead of
         // shaded circles (settings menu DISPLAY toggle; off = classic round)
         bool              square_stones = false;
+        // Octagon stone mode: beveled octagonal tiles sized to the full cell, so
+        // orthogonal neighbours meet flat edge to flat edge and diagonal ones leave
+        // a small square of board showing — the truncated-square tiling (settings
+        // menu DISPLAY toggle). Takes precedence over square_stones if both are on.
+        bool              octagon_stones = false;
         // Square grid mode: points sit at the centre of a checkerboard cell
         // instead of at a crossing of grid lines (settings menu DISPLAY toggle).
         // Purely how render_board_content draws the board underneath — every
@@ -211,6 +272,8 @@ public:
         int                popup_count = 0;
         int                popup_index = 0;
         const char*        popup_title = nullptr;
+        // Optional per-row section styling; nullptr draws the plain flat list.
+        const PopupStyle*  popup_styles = nullptr;
         // Colored continuation dots (joseki explorer) — drawn on empty points,
         // outside the board cache like the cursor
         const PointMarker* live_markers      = nullptr;
@@ -226,7 +289,7 @@ public:
         bool size_sel[3]  = {};    // 9x9, 13x13, 19x19
         bool speed_sel[3] = {};    // fast/blitz, medium/rapid, slow/live  (OGS mode)
         bool katago_mode  = false; // true = this is the KATAGO SETTINGS screen
-        int  katago_str   = 2;     // strength index 0-6 fixed ranks, 7 = adaptive (default 10k)
+        int  katago_str   = 2;     // strength index 0-7 fixed ranks, 8 = adaptive (default 10k)
         int  katago_size  = 2;     // local-play board size: 0=9x9, 1=13x13, 2=19x19
         std::string adaptive_label; // display text for the adaptive row, e.g. "ADAPTIVE (8 KYU)"
         bool show_coords_sel = false; // mirrors App::show_coords_ while the menu is open
@@ -235,9 +298,11 @@ public:
                                          // ENGINE ANALYSIS row renders greyed out, inert
         bool chain_sel       = false; // mirrors App::chain_mode_ (visual links between chained stones)
         bool square_sel      = false; // mirrors App::square_stones_ (tile-style stones)
+        bool octagon_sel     = false; // mirrors App::octagon_stones_ (tessellating octagon tiles)
         bool square_grid_sel = false; // mirrors App::square_grid_ (checkerboard cell layout)
         bool territory_sel      = false; // mirrors App::show_live_ownership_ (live territory overlay)
         bool territory_available = true; // false = no KataGo process running — greyed out, inert
+        bool next_move_sel   = false; // mirrors App::show_next_move_ (yellow actual-move ring in review)
         bool ingame       = false; // opened mid-game — hide search/mode controls, board
                                    // size/speed shown read-only for reference only
     };
@@ -277,7 +342,7 @@ public:
     bool match_menu_cell_at(const MatchMenu& menu, int mx, int my,
                             int& col, int& row) const;
 
-    // Which part of a BOARD HUE/SAT/VAL row (DISPLAY column, rows 6-8) a screen
+    // Which part of a BOARD HUE/SAT/VAL row (DISPLAY column, rows 8-10) a screen
     // point falls in: -1 = not on either button, 0 = [-], 1 = [+]. `row` must
     // already be known to be one of those three (see match_menu_hit) — this
     // only computes button geometry, it doesn't validate the row itself.
@@ -289,16 +354,26 @@ public:
     // START popup action menu: dims the current backbuffer contents and draws a
     // centered command list on top. Draw-only (no present) — draw_board layers it
     // via the DrawState popup fields; list screens call it directly and present.
+    //
+    // `styles`, when given, is one entry per row and groups a long menu into
+    // sections. Headings are labels, not commands: they get a section gap above
+    // them, no highlight band, and popup_item_at never returns one, so the
+    // caller's own up/down stepping is all that has to know to skip them.
+    // Passing nullptr draws the plain flat list, which is what the short menus
+    // want — sections on a two-item popup would be noise.
     void draw_popup_menu(const char* title, const std::string* items,
-                         int count, int index);
+                         int count, int index, const PopupStyle* styles = nullptr);
 
     // Hit-test the popup that draw_popup_menu would draw for the same arguments —
     // the mouse counterpart to it, in the same spirit as screen_to_board/board_to_screen.
     // Returns the item index under (mx,my), or -1 if the point isn't on an item.
     // `inside_panel` (optional) reports whether the point lands inside the popup box
     // at all, so callers can tell "missed a row" from "clicked outside to dismiss".
+    // `styles` must match what was passed to draw_popup_menu, or the rows this
+    // tests will not be the rows that were drawn.
     int  popup_item_at(const char* title, const std::string* items, int count,
-                       int mx, int my, bool* inside_panel = nullptr) const;
+                       int mx, int my, bool* inside_panel = nullptr,
+                       const PopupStyle* styles = nullptr) const;
 
     // ── Freehand chalk annotation ────────────────────────────────────────────
     // A persistent screen-space scribble layer, as if drawn on the glass: strokes
@@ -336,8 +411,15 @@ private:
         int  first_row_y = 0;        // top of item 0's text
         int  row_x       = 0;        // left edge of a row's highlight band
         int  row_w       = 0;        // width of a row's highlight band
+        // Top of each row's text. Rows are no longer a fixed stride apart once
+        // section headings are in play (each one opens a gap above itself), so
+        // both the draw and the hit-test read positions from here rather than
+        // multiplying by line_h.
+        std::vector<int> row_y;
+        int  rows_h      = 0;        // total height the rows occupy
     };
-    PopupLayout popup_layout(const char* title, const std::string* items, int count) const;
+    PopupLayout popup_layout(const char* title, const std::string* items, int count,
+                             const PopupStyle* styles = nullptr) const;
 
     // Same contract for the generic full-screen list: draw_list_screen and
     // list_screen_item_at both derive their rows from this, never independently.
@@ -418,7 +500,7 @@ private:
     void render_liberties(const BoardView& view, const int lib_r[], const int lib_f[], int lib_count);
     void render_player_labels(const BoardView& view, const DrawState& ds);
     void render_speed_label(const BoardView& view, int delay_ms, Uint32 until);
-    void render_guess_score(const BoardView& view, bool guess_mode, int score);
+    void render_guess_score(const BoardView& view, const DrawState& ds);
     void render_mode_status(const BoardView& view, bool analysis_mode, bool game_mode, bool guess_mode, bool territory_drill, bool paused);
     void render_territory_overlay(const BoardView& view, const DrawState& ds);
     void render_who_won_overlay(const BoardView& view, const DrawState& ds);
@@ -427,6 +509,7 @@ private:
     void render_help_overlay(const BoardView& view, bool show_help, bool live_mode = false);
     void render_catalog_overlay(const BoardView& view, const DrawState& ds);
     void render_software_cursor(const BoardView& view, const DrawState& ds);
+    void render_guess_heatmap(const BoardView& view, const DrawState& ds);
     void render_board_coordinates(const BoardView& view, const DrawState& ds);
     void render_quit_confirm(const BoardView& view);
     void render_box_selection(const BoardView& view, const DrawState& ds);
@@ -452,6 +535,12 @@ private:
     void fill_circle(int cx, int cy, int radius);               // scanline fill, color already set
     void draw_circle(int cx, int cy, int radius);               // Bresenham outline only, color already set
     void fill_ring(int cx, int cy, int r_outer, int r_inner);  // scanline fill of annular region only
+    // Regular octagon with its four flat edges `radius` from the centre, so a
+    // grid of them at `2*radius` spacing tessellates edge to edge. `octagon_dx`
+    // is its row half-width — the shape's single definition, shared by the fill
+    // and by the bevel shading in shade_stone.
+    static int  octagon_dx(int dy, int radius);
+    void fill_octagon(int cx, int cy, int radius);              // scanline fill, color already set
     // Scanline fill of a rotated ellipse. ra = semi-axis along (ux,uy), rb = semi-axis along perpendicular.
     void fill_ellipse_rotated(int cx, int cy, float ux, float uy, int ra, int rb);
 
@@ -460,7 +549,8 @@ private:
     void render_board_content(const BoardView& view, const Overlay* overlay, const DrawState& ds);
     uint64_t compute_cache_hash(const DrawState& ds) const;
 
-    bool square_stones_ = false;   // mirrored from DrawState each draw_board call
+    bool square_stones_  = false;  // mirrored from DrawState each draw_board call
+    bool octagon_stones_ = false;  // ditto; wins over square_stones_ if both are set
     SDL_Texture* board_cache_ = nullptr;
 
     // Chalk layer. Deliberately separate from board_cache_: strokes composite on

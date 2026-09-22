@@ -456,6 +456,14 @@ private:
     bool   game_mode           = false;
     bool   guess_mode          = false;
     int    guess_score         = 0;
+    int    guess_count         = 0;   // guesses made this session
+    int    guess_last_points   = -1;  // score of the most recent guess, -1 = none yet
+    int    guess_last_dist     = -1;  // its ring distance, -1 = none yet
+
+    void reset_guess_stats() {
+        guess_score = 0; guess_count = 0;
+        guess_last_points = -1; guess_last_dist = -1;
+    }
     bool   territory_drill_active = false;
     std::unique_ptr<TerritoryProblem> territory_problem;
     bool   chain_mode          = true;
@@ -571,7 +579,7 @@ private:
         if (territory_drill_active) exit_territory_drill();
         if (game_mode) exit_game_mode();
         else if (in_analysis()) exit_analysis();
-        guess_mode = false; guess_score = 0;
+        guess_mode = false; reset_guess_stats();
         GameSnapshot empty{};
         analysis = std::make_unique<AnalysisState>(empty, free_board_size);
         memset(analysis_num_grid, 0, sizeof(analysis_num_grid));
@@ -678,6 +686,20 @@ private:
             else if (kb2[SDL_SCANCODE_W]) stone_filter = 2;  // white only
         }
 
+        // Bullseye aim point: the intersection under the mouse. Nearest-cell, not
+        // screen_to_board's — that one rejects positions near a cell edge, which
+        // would make the heatmap blink out between cells. handle_guess_lclick snaps
+        // identically, so the highlighted cell is always the one a click guesses.
+        int heat_r = -1, heat_f = -1;
+        if (guess_mode && cursor_visible) {
+            BoardView hv; renderer->get_board_view(hv, active_size());
+            if (hv.square > 0 && cx >= hv.offset_x && cy >= hv.offset_y) {
+                int hf = (cx - hv.offset_x) / hv.square;
+                int hr = (cy - hv.offset_y) / hv.square;
+                if (hr < hv.active_size && hf < hv.active_size) { heat_r = hr; heat_f = hf; }
+            }
+        }
+
         // Compute drag end from current mouse position
         int box_r2 = box_drag_r1, box_f2 = box_drag_f1;
         if (box_drag_active) {
@@ -692,6 +714,12 @@ private:
             .game_mode              = game_mode,
             .guess_mode             = guess_mode,
             .guess_score            = guess_score,
+            .guess_count            = guess_count,
+            .guess_last_points      = guess_last_points,
+            .guess_last_dist        = guess_last_dist,
+            .guess_heat_r           = heat_r,
+            .guess_heat_f           = heat_f,
+            .cursor_snap_heat       = true,
             .chain_mode             = chain_mode,
             .free_mode              = free_mode,
             .active_board_size      = active_size(),
@@ -930,8 +958,8 @@ void App::handle_key(SDL_Keycode key, const Uint8* /*kb*/, bool& quit) {
         } else {
             if (in_analysis()) exit_analysis();
             if (game_mode) exit_game_mode();
-            guess_mode  = true;
-            guess_score = 0;
+            guess_mode = true;
+            reset_guess_stats();
         }
         draw_board();
         return;
@@ -1097,8 +1125,15 @@ void App::handle_playback_lclick(const BoardView& view, int mx, int my) {
 
 void App::handle_guess_lclick(const BoardView& view, int mx, int my,
                               bool& guess_pending, int& gr, int& gf) {
-    int r = -1, f = -1;
-    if (!renderer->screen_to_board(view, mx, my, r, f)) return;
+    // Nearest intersection, not screen_to_board's — that one rejects clicks near a
+    // cell's edge, which would silently drop guesses on points the heatmap cursor is
+    // visibly highlighting. The heatmap snaps the same way, so what you see is what
+    // you guess.
+    if (view.square <= 0) return;
+    if (mx < view.offset_x || my < view.offset_y) return;   // before the divide
+    int f = (mx - view.offset_x) / view.square;
+    int r = (my - view.offset_y) / view.square;
+    if (r >= view.active_size || f >= view.active_size) return;
     if (game.board[r][f] == 0) {
         gr = r; gf = f;
         guess_pending = true;
@@ -1298,7 +1333,7 @@ bool App::play_current_game() {
     if (game_mode) exit_game_mode();
     else if (in_analysis()) exit_analysis();
     guess_mode  = false;
-    guess_score = 0;
+    reset_guess_stats();
     free_mode   = false;
     // Pump pending events so the window is fully mapped before the first draw.
     // On Linux/Wayland the compositor may not have set the real window size yet;
@@ -1523,8 +1558,14 @@ bool App::play_current_game() {
         if (guess_pending && game_index < sgf.move_count) {
             int er, ef;
             if (parse_sgf_move(sgf.moves[game_index], er, ef)) {
-                if (er == guess_r && ef == guess_f) guess_score += 5;
-                else                                guess_score -= 5;
+                // Bullseye scoring: credit for landing near the played move, not just
+                // on it. No penalty for a miss — the ceiling (10/guess, shown in the
+                // HUD) is what makes a score meaningful, not a negative floor.
+                int dist = guess_ring_dist(guess_r, guess_f, er, ef);
+                guess_last_dist   = dist;
+                guess_last_points = guess_points(dist);
+                guess_score      += guess_last_points;
+                guess_count++;
                 bool is_black = (sgf.colors[game_index] == 1);
                 animate_move(er, ef, is_black);
                 game_index++;

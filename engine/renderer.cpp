@@ -356,6 +356,25 @@ void Renderer::draw_circle(int cx, int cy, int radius) {
     }
 }
 
+// Row half-width of a regular octagon whose four flat edges sit `radius` from the
+// centre: full width across the flats, then a 45° cut at each corner. The corner
+// cut starts where the flat edge ends, at (sqrt(2)-1)*radius — the value that makes
+// all eight sides the same length.
+int Renderer::octagon_dx(int dy, int radius) {
+    int flat = (int)(radius * 0.41421356f + 0.5f);
+    int ady  = (dy < 0) ? -dy : dy;
+    if (ady <= flat) return radius;
+    if (ady >  radius) return -1;
+    return radius - (ady - flat);
+}
+
+void Renderer::fill_octagon(int cx, int cy, int radius) {
+    for (int dy = -radius; dy <= radius; dy++) {
+        int dx = octagon_dx(dy, radius);
+        SDL_RenderDrawLine(sdl, cx - dx, cy + dy, cx + dx, cy + dy);
+    }
+}
+
 void Renderer::fill_ring(int cx, int cy, int r_outer, int r_inner) {
     for (int dy = -r_outer; dy <= r_outer; dy++) {
         int dx_o = (int)sqrtf(float(r_outer * r_outer - dy * dy));
@@ -390,7 +409,11 @@ void Renderer::fill_ellipse_rotated(int cx, int cy, float ux, float uy, int ra, 
 void Renderer::draw_stone_circle(const BoardView& view, int r, int f, int is_black, Uint8 alpha, bool shadow_pass) {
     int cx     = view.offset_x + f * view.square + view.square / 2;
     int cy     = view.offset_y + r * view.square + view.square / 2;
-    int radius = view.square / 2 - 2;
+    // Round and square stones sit inside the cell with a couple of pixels of board
+    // showing between neighbours. Octagons deliberately fill it: at exactly half a
+    // cell, orthogonal neighbours meet flat edge to flat edge, which is the whole
+    // point of that mode.
+    int radius = view.square / 2 - (octagon_stones_ ? 0 : 2);
     if (radius < 2) radius = 2;
     shade_stone(cx, cy, radius, is_black, alpha, shadow_pass);
 }
@@ -407,6 +430,54 @@ Renderer::StoneColors Renderer::stone_colors(int is_black) {
 }
 
 void Renderer::shade_stone(int cx, int cy, int radius, int is_black, Uint8 alpha, bool shadow_pass) {
+    // Octagon stone mode: the square tile's bevel wrapped onto an octagon. Checked
+    // before square_stones_ so a settings file with both flags set still renders one
+    // definite shape rather than something half-way.
+    if (octagon_stones_) {
+        if (shadow_pass) {
+            if (radius >= 4) {
+                int sox = radius / 5 + 1;
+                SDL_SetRenderDrawColor(sdl, 0, 0, 0, (Uint8)(alpha * 0.18f));
+                fill_octagon(cx + sox + 1, cy + sox + 1, radius + 2);
+                SDL_SetRenderDrawColor(sdl, 0, 0, 0, (Uint8)(alpha * 0.30f));
+                fill_octagon(cx + sox,     cy + sox,     radius + 1);
+            }
+            return;
+        }
+        auto c = stone_colors(is_black);
+        SDL_SetRenderDrawBlendMode(sdl, SDL_BLENDMODE_NONE);
+        SDL_SetRenderDrawColor(sdl, c.base.r, c.base.g, c.base.b, alpha);
+        fill_octagon(cx, cy, radius);
+
+        // Bevel: the band between the tile and an octagon inset by `bevel`. Rows
+        // above the inset tile are all top edge (lit), rows below are all bottom
+        // edge (dark), and in between the band splits into a left run and a right
+        // run. Same top-left-lit / bottom-right-dark reading as the square tiles,
+        // corners included — it's a light direction, not a per-edge normal.
+        SDL_SetRenderDrawBlendMode(sdl, SDL_BLENDMODE_BLEND);
+        int bevel = std::max(1, radius / 4);
+        int inner = radius - bevel;
+        SDL_Color lit = c.lit, dark = c.dark;
+        Uint8 lit_a  = (Uint8)(alpha * c.alpha2);
+        Uint8 dark_a = (Uint8)(alpha * 0.8f);
+        for (int dy = -radius; dy <= radius; dy++) {
+            int dxo = octagon_dx(dy, radius);
+            int dxi = octagon_dx(dy, inner);
+            if (dxi < 0) {   // past the inset tile entirely — whole row is bevel
+                bool top = (dy < 0);
+                SDL_SetRenderDrawColor(sdl, top ? lit.r : dark.r, top ? lit.g : dark.g,
+                                       top ? lit.b : dark.b, top ? lit_a : dark_a);
+                SDL_RenderDrawLine(sdl, cx - dxo, cy + dy, cx + dxo, cy + dy);
+                continue;
+            }
+            SDL_SetRenderDrawColor(sdl, lit.r, lit.g, lit.b, lit_a);
+            SDL_RenderDrawLine(sdl, cx - dxo, cy + dy, cx - dxi, cy + dy);
+            SDL_SetRenderDrawColor(sdl, dark.r, dark.g, dark.b, dark_a);
+            SDL_RenderDrawLine(sdl, cx + dxi, cy + dy, cx + dxo, cy + dy);
+        }
+        return;
+    }
+
     // Square stone mode: flat tiles with a subtle top-left/bottom-right bevel,
     // same footprint and shadow offsets as the round stones.
     if (square_stones_) {
@@ -787,19 +858,61 @@ void Renderer::render_speed_label(const BoardView& view, int delay_ms, Uint32 un
     draw_text(x, y, scale, buf, Palette::TEXT_WHITE);
 }
 
-void Renderer::render_guess_score(const BoardView& view, bool guess_mode, int score) {
-    if (!guess_mode) return;
-    char buf[32];
-    snprintf(buf, sizeof(buf), "Score: %d", score);
+// Colour of each scoring ring, shared by the heatmap cursor and the HUD legend so
+// the numbers on screen and the shells under the pointer always agree. A cold-to-hot
+// ramp: the bullseye reads as the hot centre, the outer ring as barely-warm.
+static const SDL_Color GUESS_RING_COLOR[3] = {
+    {255,  70,  40, 255},   // ring 0 — 10 pts, red hot
+    {255, 165,  40, 255},   // ring 1 —  5 pts, orange
+    { 80, 150, 230, 255},   // ring 2 —  1 pt,  cool blue
+};
+
+void Renderer::render_guess_score(const BoardView& view, const DrawState& ds) {
+    if (!ds.guess_mode) return;
+    // The live client owns this gutter with its status line and would overdraw us;
+    // it reports the same scoreboard through that status instead.
+    if (ds.live_mode) return;
     int scale  = (view.square >= 30) ? 3 : 2;
     int margin = (view.square >= 30) ? 16 : 8;
     int th     = 7 * scale;
     int gap    = scale + 2;
-    // Render just below the "GUESS MODE" label (same left-aligned x, one line down)
-    int tw_mode = text_width_px("GUESS MODE", scale);
-    int x = view.offset_x - view.margin - margin - tw_mode;
-    int y = view.offset_y - view.margin + margin + th + gap;
-    draw_text(x, y, scale, buf, Palette::TEXT_SECONDARY);
+    int line_h = th + gap;
+    // Right-aligned into the same left gutter the "GUESS MODE" label occupies,
+    // stacked underneath it.
+    int right = view.offset_x - view.margin - margin;
+    int y     = view.offset_y - view.margin + margin + line_h;
+    auto line = [&](const char* txt, SDL_Color col) {
+        draw_text(right - text_width_px(txt, scale), y, scale, txt, col);
+        y += line_h;
+    };
+
+    char buf[48];
+    snprintf(buf, sizeof(buf), "SCORE %d", ds.guess_score);
+    line(buf, Palette::SCORE_TEXT);
+
+    // Out of what: every guess could have been a bullseye, so the ceiling is
+    // 10/guess. Without it a big score says nothing about how well you're doing.
+    if (ds.guess_count > 0) {
+        int best = ds.guess_count * GUESS_MAX_POINTS;
+        snprintf(buf, sizeof(buf), "OF %d  (%d%%)", best,
+                 (ds.guess_score * 100 + best / 2) / best);
+        line(buf, Palette::TEXT_DIM);
+    }
+
+    // Last guess, coloured by the ring it landed in — the reward signal, so it
+    // gets the ring's own colour rather than generic text grey.
+    if (ds.guess_last_points >= 0) {
+        y += gap;
+        if (ds.guess_last_points > 0) {
+            snprintf(buf, sizeof(buf), "+%d", ds.guess_last_points);
+            SDL_Color c = (ds.guess_last_dist >= 0 && ds.guess_last_dist < 3)
+                              ? GUESS_RING_COLOR[ds.guess_last_dist] : Palette::TEXT_DIM;
+            line(buf, c);
+            line(ds.guess_last_dist == 0 ? "BULLSEYE!" : "CLOSE", c);
+        } else {
+            line("MISS", Palette::TEXT_DIM);
+        }
+    }
 }
 
 void Renderer::render_player_labels(const BoardView& view, const DrawState& ds) {
@@ -823,7 +936,17 @@ void Renderer::render_player_labels(const BoardView& view, const DrawState& ds) 
 
     char bpstr[32], wpstr[32];
     char b_pris[32], w_pris[32];
-    if (ds.live_mode) {
+    // A filled board carries its own score: every point is a stone of its owner's
+    // colour, so counting the stones IS the Chinese count. The clock line is dead
+    // weight there (the screensaver has no clocks), so the count takes that slot —
+    // biggest text in the panel, readable from across the room.
+    bool area_count = (ds.live_area_black >= 0 && ds.live_area_white >= 0);
+    if (area_count) {
+        snprintf(bpstr,  sizeof(bpstr),  "%d", ds.live_area_black);
+        snprintf(wpstr,  sizeof(wpstr),  "%d", ds.live_area_white);
+        snprintf(b_pris, sizeof(b_pris), "Prisoners: %d", bp);
+        snprintf(w_pris, sizeof(w_pris), "Prisoners: %d", wp);
+    } else if (ds.live_mode) {
         // Show clock on line 2; for byo-yomi show period info when main time is gone
         auto fmt_clock = [](int secs, int periods, int period_secs, char* buf, size_t n) {
             if (secs < 0) { snprintf(buf, n, "--:--"); return; }
@@ -907,6 +1030,13 @@ void Renderer::render_player_labels(const BoardView& view, const DrawState& ds) 
     };
     SDL_Color b_clock_color = byo_color(ds.live_black_in_byo, ds.live_black_secs, ds.live_black_periods);
     SDL_Color w_clock_color = byo_color(ds.live_white_in_byo, ds.live_white_secs, ds.live_white_periods);
+    // The area count is a result, not a clock, so it gets the accent colour. Both
+    // sides equally: these are raw stone counts with no komi in them, so the bigger
+    // number is not necessarily the winner and shouldn't be dressed up as one.
+    if (area_count) {
+        b_clock_color = Palette::ACCENT;
+        w_clock_color = Palette::ACCENT;
+    }
 
     // Helper: draw a filled circle for the player stone
     auto draw_stone = [&](int cx, int cy, bool is_black) {
@@ -1002,6 +1132,12 @@ void Renderer::render_help_overlay(const BoardView& view, bool show_help, bool l
         {"R.CLICK",    "REMOVE STONE"},
         {"X",          "CLEAR BOARD"},
         {"",           ""},
+        {nullptr,      "GUESS MODE (G)"},
+        {"CLICK",      "GUESS THE NEXT MOVE"},
+        {"BULLSEYE",   "10 PTS - EXACT POINT"},
+        {"RING 1",     "5 PTS - ONE POINT AWAY"},
+        {"RING 2",     "1 PT  - TWO POINTS AWAY"},
+        {"",           ""},
         {nullptr,      "CATALOG"},
         {"UP/DOWN",    "NAVIGATE"},
         {"ENTER",      "OPEN"},
@@ -1044,6 +1180,7 @@ void Renderer::render_help_overlay(const BoardView& view, bool show_help, bool l
             {GLYPH_PS_TRIANGLE " x2","M x2","MARK/UNMARK MOVE"},
             {GLYPH_PS_SQUARE,"C",           "OPEN CATALOG"},
             {"L3/R3",       "PGUP/PGDN",    "PREV/NEXT FILE"},
+            {"",            "G",            "GUESS THE MOVE (10/5/1 BY DISTANCE)"},
             {"OPT",         "R / F",        "MENU (LOBBY, DRILL TOOLS...)"},
             {"SHARE",       "S",            "SETTINGS MENU"},
             {"",            "",             ""},
@@ -1335,11 +1472,12 @@ void Renderer::draw_match_menu(const MatchMenu& menu) {
 
     static const char* size_labels[3]  = {"9x9", "13x13", "19x19"};
     static const char* speed_labels[3] = {"FAST   (30s + 5x10)", "MEDIUM (5m + 5x30)", "SLOW   (20m + 5x30)"};
-    static const char* str_labels[7]   = {
-        "20 KYU", "15 KYU", "10 KYU", "5 KYU", "1 KYU", "1 DAN", "5 DAN"
+    static const char* str_labels[8]   = {
+        "20 KYU", "15 KYU", "10 KYU", "5 KYU", "1 KYU", "1 DAN", "5 DAN", "9 DAN"
     };
-    static const char* display_labels[6] = {"SHOW COORDINATES", "ENGINE ANALYSIS", "CHAIN LINKS",
-                                            "SQUARE STONES", "SQUARE GRID", "SHOW TERRITORY"};
+    static const char* display_labels[8] = {"SHOW COORDINATES", "ENGINE ANALYSIS", "CHAIN LINKS",
+                                            "SQUARE STONES", "OCTAGON STONES", "SQUARE GRID",
+                                            "SHOW TERRITORY", "SHOW NEXT MOVE"};
 
     // Column headers all sit on the same line, one row above their column's first
     // control — col_ty already points past them (see match_menu_layout).
@@ -1397,12 +1535,12 @@ void Renderer::draw_match_menu(const MatchMenu& menu) {
         }
 
         if (menu.katago_mode) {
-            for (int i = 0; i < 7; i++)
+            for (int i = 0; i < 8; i++)
                 draw_radio(1, i, str_labels[i], menu.katago_str == i);
-            // Row 7: adaptive strength — label carries the current resolved rank
-            draw_radio(1, 7,
+            // Row 8: adaptive strength — label carries the current resolved rank
+            draw_radio(1, 8,
                        menu.adaptive_label.empty() ? "ADAPTIVE" : menu.adaptive_label.c_str(),
-                       menu.katago_str == 7);
+                       menu.katago_str == 8);
         } else {
             for (int i = 0; i < 3; i++)
                 draw_check(1, i, speed_labels[i], menu.speed_sel[i]);
@@ -1413,9 +1551,13 @@ void Renderer::draw_match_menu(const MatchMenu& menu) {
         draw_check(display_col, 0, display_labels[0], menu.show_coords_sel);
         draw_check(display_col, 1, display_labels[1], menu.analysis_sel, !menu.analysis_available);
         draw_check(display_col, 2, display_labels[2], menu.chain_sel);
+        // SQUARE and OCTAGON are one shape choice spelled as two checkboxes — the
+        // App toggles clear the other one, so at most one is ever ticked.
         draw_check(display_col, 3, display_labels[3], menu.square_sel);
-        draw_check(display_col, 4, display_labels[4], menu.square_grid_sel);
-        draw_check(display_col, 5, display_labels[5], menu.territory_sel, !menu.territory_available);
+        draw_check(display_col, 4, display_labels[4], menu.octagon_sel);
+        draw_check(display_col, 5, display_labels[5], menu.square_grid_sel);
+        draw_check(display_col, 6, display_labels[6], menu.territory_sel, !menu.territory_available);
+        draw_check(display_col, 7, display_labels[7], menu.next_move_sel);
 
         // Board colour: HUE/SAT/VAL as a bracketed number in the same slot draw_check
         // uses for [X]/[ ], followed by dedicated [-]/[+] buttons — a mouse-clickable
@@ -1442,14 +1584,14 @@ void Renderer::draw_match_menu(const MatchMenu& menu) {
             draw_text(px, y, scale, "[+]", focused ? Palette::ACCENT : Palette::TEXT_WHITE);
             stepper_bx = bx;
         };
-        draw_stepper(6, "BOARD HUE", Palette::BOARD_HUE);
-        draw_stepper(7, "BOARD SAT", Palette::BOARD_SAT);
-        draw_stepper(8, "BOARD VAL", Palette::BOARD_VAL);
+        draw_stepper(8,  "BOARD HUE", Palette::BOARD_HUE);
+        draw_stepper(9,  "BOARD SAT", Palette::BOARD_SAT);
+        draw_stepper(10, "BOARD VAL", Palette::BOARD_VAL);
 
         int stepper_px = stepper_bx + text_width_px("[-]", scale) + scale * 3;   // [+] start, same formula as draw_stepper
         int swatch_x    = stepper_px + text_width_px("[+]", scale) + scale * 6;
-        int swatch_top  = col_ty[display_col] + 6 * line_h;
-        int swatch_size = 2 * line_h + th;   // spans row 6's top to row 8's text bottom
+        int swatch_top  = col_ty[display_col] + 8 * line_h;
+        int swatch_size = 2 * line_h + th;   // spans row 8's top to row 10's text bottom
         draw_color_swatch(swatch_x, swatch_top, swatch_size, Palette::BOARD, Palette::TEXT_DIM);
     }
 
@@ -1476,6 +1618,7 @@ void Renderer::draw_match_menu(const MatchMenu& menu) {
             {GLYPH_PS_TRIANGLE " x2","MARK/UNMARK MOVE"},
             {GLYPH_PS_SQUARE,       "OPEN CATALOG"},
             {"L3/R3",               "PREV/NEXT FILE"},
+            {"G",                   "GUESS THE MOVE"},
             {"OPTIONS",             "GAME MENU"},
         };
         static const CRow catalog_rows[] = {
@@ -1497,11 +1640,11 @@ void Renderer::draw_match_menu(const MatchMenu& menu) {
         int block_h  = (max_rows + 1) * line_h + line_gap * 2;  // +1 for column headers
         int cy_top   = sh - block_h - hpad / 2;
 
-        // Longest option column above is DISPLAY (header + 9 rows, since the board
-        // HUE/SAT/VAL steppers were added) — must track DISPLAY_ROWS in main.cpp's
+        // Longest option column above is DISPLAY (header + 11 rows: 8 toggles plus
+        // the board HUE/SAT/VAL steppers) — must track DISPLAY_ROWS in main.cpp's
         // match_menu_cols(). Skip the reference entirely rather than draw over it
         // when the window is too short.
-        int options_bottom = ty + (line_h + line_gap) + 9 * line_h + line_gap * 2;
+        int options_bottom = ty + (line_h + line_gap) + 11 * line_h + line_gap * 2;
         if (cy_top < options_bottom) { SDL_RenderPresent(sdl); return; }
 
         SDL_Color col_header = {160, 160, 160, 255};
@@ -1702,8 +1845,16 @@ int Renderer::list_screen_item_at(int total, int index, int mx, int my) const {
 // layout and the draw must use the same string — hence one definition here.
 static const char* const POPUP_HINT = GLYPH_PS_CROSS "=SELECT   " GLYPH_PS_CIRCLE "=CLOSE";
 
+// How far a command sits in from its section heading, in character widths — a
+// glyph advance is 6 * scale px, so this scales with the text like everything
+// else in the panel. Enough that a heading visibly owns the rows beneath it,
+// small enough that the list still reads as one column.
+static const int POPUP_INDENT_CHARS = 2;
+
+static inline int popup_indent_px(int scale) { return POPUP_INDENT_CHARS * 6 * scale; }
+
 Renderer::PopupLayout Renderer::popup_layout(const char* title, const std::string* items,
-                                             int count) const {
+                                             int count, const PopupStyle* styles) const {
     PopupLayout L;
     int sw, sh;
     SDL_GetRendererOutputSize(sdl, &sw, &sh);
@@ -1719,20 +1870,37 @@ Renderer::PopupLayout Renderer::popup_layout(const char* title, const std::strin
     if (L.has_title) w = std::max(w, text_width_px(title, L.scale));
     for (int i = 0; i < count; i++)
         w = std::max(w, text_width_px(items[i].c_str(), L.scale));
+    // Commands under a heading are indented, so their rows need that much more
+    // width before the longest of them would touch the panel edge.
+    if (styles) w += popup_indent_px(L.scale);
+
+    // Row offsets first: the panel's height depends on them once headings can
+    // open a gap, so the box cannot be sized before the rows are placed.
+    std::vector<int> offset;
+    offset.reserve(count);
+    int h = 0;
+    for (int i = 0; i < count; i++) {
+        if (styles && styles[i].heading && i > 0) h += L.line_gap * 2;
+        offset.push_back(h);
+        h += L.line_h;
+    }
+    L.rows_h = h;
 
     int box_w = w + L.pad * 2;
-    int box_h = L.pad * 2 + count * L.line_h + L.line_gap + L.text_h
+    int box_h = L.pad * 2 + L.rows_h + L.line_gap + L.text_h
               + (L.has_title ? L.line_h + L.line_gap : 0);
     L.box = {(sw - box_w) / 2, (sh - box_h) / 2, box_w, box_h};
 
     L.first_row_y = L.box.y + L.pad + (L.has_title ? L.line_h + L.line_gap : 0);
     L.row_x       = L.box.x + L.pad - 6;
     L.row_w       = box_w - L.pad * 2 + 12;
+    L.row_y.reserve(count);
+    for (int o : offset) L.row_y.push_back(L.first_row_y + o);
     return L;
 }
 
 void Renderer::draw_popup_menu(const char* title, const std::string* items,
-                               int count, int index) {
+                               int count, int index, const PopupStyle* styles) {
     if (!items || count <= 0) return;
     int sw, sh;
     SDL_GetRendererOutputSize(sdl, &sw, &sh);
@@ -1743,7 +1911,7 @@ void Renderer::draw_popup_menu(const char* title, const std::string* items,
     SDL_Rect dim = {0, 0, sw, sh};
     SDL_RenderFillRect(sdl, &dim);
 
-    PopupLayout L = popup_layout(title, items, count);
+    PopupLayout L = popup_layout(title, items, count, styles);
 
     SDL_SetRenderDrawBlendMode(sdl, SDL_BLENDMODE_NONE);
     SDL_SetRenderDrawColor(sdl, Palette::GRID.r, Palette::GRID.g, Palette::GRID.b, 255);
@@ -1756,7 +1924,27 @@ void Renderer::draw_popup_menu(const char* title, const std::string* items,
         draw_text(tx, L.box.y + L.pad, L.scale, title, Palette::ACCENT);
 
     for (int i = 0; i < count; i++) {
-        int ty = L.first_row_y + i * L.line_h;
+        int  ty      = L.row_y[i];
+        bool heading = styles && styles[i].heading;
+
+        if (heading) {
+            // A rule running from the end of the label to the panel edge, so the
+            // section reads as a divider without spending a whole row on one.
+            int lw = text_width_px(items[i].c_str(), L.scale);
+            int x0 = tx + lw + L.line_gap;
+            int x1 = L.row_x + L.row_w - L.line_gap;
+            if (x1 > x0) {
+                SDL_Color c = styles[i].color;
+                SDL_SetRenderDrawBlendMode(sdl, SDL_BLENDMODE_BLEND);
+                SDL_SetRenderDrawColor(sdl, c.r, c.g, c.b, 90);
+                SDL_Rect rule = {x0, ty + L.text_h / 2, x1 - x0, std::max(1, L.scale - 1)};
+                SDL_RenderFillRect(sdl, &rule);
+            }
+            draw_text(tx, ty, L.scale, items[i].c_str(), styles[i].color);
+            continue;
+        }
+
+        int ix = tx + (styles ? popup_indent_px(L.scale) : 0);
         if (i == index) {
             SDL_Rect hi = {L.row_x, ty - 3, L.row_w, L.text_h + 6};
             SDL_SetRenderDrawBlendMode(sdl, SDL_BLENDMODE_BLEND);
@@ -1764,30 +1952,36 @@ void Renderer::draw_popup_menu(const char* title, const std::string* items,
                                    Palette::CATALOG_SELECT.b, Palette::CATALOG_SELECT.a);
             SDL_RenderFillRect(sdl, &hi);
         }
-        draw_text(tx, ty, L.scale, items[i].c_str(),
-                  i == index ? Palette::ACCENT : Palette::TEXT_WHITE);
+        draw_text(ix, ty, L.scale, items[i].c_str(),
+                  i == index ? Palette::ACCENT
+                             : (styles ? styles[i].color : Palette::TEXT_WHITE));
     }
-    draw_text(tx, L.first_row_y + count * L.line_h + L.line_gap, L.scale,
+    draw_text(tx, L.first_row_y + L.rows_h + L.line_gap, L.scale,
               POPUP_HINT, Palette::TEXT_DIM);
 }
 
 int Renderer::popup_item_at(const char* title, const std::string* items, int count,
-                            int mx, int my, bool* inside_panel) const {
+                            int mx, int my, bool* inside_panel,
+                            const PopupStyle* styles) const {
     if (inside_panel) *inside_panel = false;
     if (!items || count <= 0) return -1;
 
-    PopupLayout L = popup_layout(title, items, count);
+    PopupLayout L = popup_layout(title, items, count, styles);
     if (inside_panel)
         *inside_panel = (mx >= L.box.x && mx < L.box.x + L.box.w &&
                          my >= L.box.y && my < L.box.y + L.box.h);
 
     if (mx < L.row_x || mx >= L.row_x + L.row_w) return -1;
     // Rows are hit across their full stride (no inset dead zone like the board's —
-    // a menu should be forgiving), with the band centred on the text.
-    int rel = my - (L.first_row_y - L.line_gap / 2);
-    if (rel < 0) return -1;
-    int idx = rel / L.line_h;
-    return (idx >= 0 && idx < count) ? idx : -1;
+    // a menu should be forgiving), with the band centred on the text. Walking the
+    // rows rather than dividing by a stride, because section gaps make the rows
+    // unevenly spaced; the gap above a heading belongs to neither neighbour.
+    for (int i = 0; i < count; i++) {
+        if (styles && styles[i].heading) continue;   // a label, not a command
+        int top = L.row_y[i] - L.line_gap / 2;
+        if (my >= top && my < top + L.line_h) return i;
+    }
+    return -1;
 }
 
 Renderer::CatalogLayout Renderer::catalog_layout(const BoardView& view, const Catalog& cat,
@@ -2779,7 +2973,9 @@ void Renderer::render_score_graph(const BoardView& view, const DrawState& ds) {
 void Renderer::draw_board(const DrawState& ds) {
     BoardView view;
     get_board_view(view, ds.active_board_size);
-    square_stones_ = ds.square_stones;  // read by shade_stone (also hashed for the cache)
+    square_stones_  = ds.square_stones;   // read by shade_stone (also hashed for the cache)
+    octagon_stones_ = ds.octagon_stones;  // ditto — and by draw_stone_circle, which sizes octagons
+                                          // to the full cell so neighbours share an edge
     render_board(view, nullptr, ds);
 }
 
@@ -2826,12 +3022,16 @@ uint64_t Renderer::compute_cache_hash(const DrawState& ds) const {
     mix8(uint8_t(ds.chain_mode));
     mix8(uint8_t(ds.free_mode));
     mix8(uint8_t(ds.square_stones));
+    mix8(uint8_t(ds.octagon_stones));
     mix8(uint8_t(ds.square_grid));
     mix8(uint8_t(ds.puzzle_mode));
     mix64(uint64_t(ds.active_board_size));
     mix8(uint8_t(ds.show_help));
     mix8(uint8_t(ds.territory_drill));
     mix64(uint64_t(ds.guess_score));
+    mix64(uint64_t(ds.guess_count));
+    mix64(uint64_t(ds.guess_last_points + 1));   // -1 ("no guess yet") must still mix
+    mix64(uint64_t(ds.guess_last_dist   + 1));
 
     // Turn / liberty overlay
     if (ds.analysis) {
@@ -2915,6 +3115,9 @@ uint64_t Renderer::compute_cache_hash(const DrawState& ds) const {
                 for (int f = 0; f < n; f++)
                     mix8(uint8_t(ds.live_ownership[r][f]));
         }
+        mix8(uint8_t(ds.live_ownership_fill));
+        mix64(uint64_t(ds.live_area_black));
+        mix64(uint64_t(ds.live_area_white));
         for (int i = 0; i < ds.live_suggestion_count; i++) {
             mix8(uint8_t(ds.live_suggestions[i].row));
             mix8(uint8_t(ds.live_suggestions[i].col));
@@ -3121,25 +3324,44 @@ void Renderer::render_board_content(const BoardView& view, const Overlay* overla
                          ? (ds.territory_drill ? 0 : ds.game.liberty_count)
                          : ds.analysis->liberty_count;
 
+    // Chinese-style fill view (STONE_REMOVAL, Y/Triangle toggle): instead of marking
+    // territory with small squares, redraw the board with every empty point AND every
+    // dead-stone point turned into a full stone of the owning color — so the final
+    // position reads like a completely filled Chinese-rules board.
+    char fill_buf[MAX_BOARD_SIZE][MAX_BOARD_SIZE];
+    bool fill_view = ds.live_ownership_fill && ds.live_ownership;
+    if (fill_view) {
+        for (int r = 0; r < n; r++)
+            for (int f = 0; f < n; f++) {
+                bool dead = ds.live_dead_stones && ds.live_dead_stones[r][f];
+                char cell = active_board[r][f];
+                if (cell != 0 && !dead) { fill_buf[r][f] = cell; continue; }  // living stone
+                int ow = ds.live_ownership[r][f];
+                fill_buf[r][f] = (ow > 0) ? 1 : (ow < 0) ? 2 : 0;  // owner's stone, or empty if neutral
+            }
+    }
+    const char (*display_board)[MAX_BOARD_SIZE] = fill_view ? fill_buf : active_board;
+
     // Layered render:
     //   1. All shadows (max-alpha composite — no stacking)
     //   2. Stone fills
     //   3. Link cylinders with elliptical caps on top (bars drawn over stones,
     //      shortened to stone edge so caps give cylinder-meets-sphere illusion)
-    render_all_shadows(view, active_board, ds.chain_mode, ds.stone_filter, n);
+    render_all_shadows(view, display_board, ds.chain_mode, ds.stone_filter, n);
     for (int r = 0; r < n; r++)
         for (int f = 0; f < n; f++) {
-            int cell = active_board[r][f];
+            int cell = display_board[r][f];
             if (cell == 0) continue;
             int is_black = (cell == 1);
             if (ds.stone_filter == 1 && !is_black) continue;
             if (ds.stone_filter == 2 &&  is_black) continue;
             draw_stone_circle(view, r, f, is_black, 255, /*shadow_pass=*/false);
         }
-    render_chain_connections(view, active_board, ds.chain_mode, ds.stone_filter, /*shadows_only=*/false);
+    render_chain_connections(view, display_board, ds.chain_mode, ds.stone_filter, /*shadows_only=*/false);
 
-    // Stone-removal overlay: grey out dead stones, mark territory
-    if (ds.live_dead_stones || ds.live_ownership) {
+    // Stone-removal overlay: grey out dead stones, mark territory. Skipped entirely
+    // in fill_view — the filled stones above already show ownership.
+    if (!fill_view && (ds.live_dead_stones || ds.live_ownership)) {
         SDL_SetRenderDrawBlendMode(sdl, SDL_BLENDMODE_BLEND);
         int sq    = view.square;
         int sq2   = sq / 2;
@@ -3219,7 +3441,9 @@ void Renderer::render_board_content(const BoardView& view, const Overlay* overla
 
     // Actual game move marker: yellow filled circle (larger than suggestions),
     // drawn first so suggestion circles appear on top and form a visible ring.
-    // Hidden while hovering a suggestion (PV line is shown instead).
+    // Hidden while hovering a suggestion (PV line is shown instead), and off
+    // unless SHOW NEXT MOVE is ticked (see the caller filling these fields) —
+    // it spoils the position for anyone reading ahead on their own.
     if (ds.live_actual_move_r >= 0 && ds.live_actual_move_f >= 0 &&
         ds.live_hovered_suggestion < 0) {
         int sq   = view.square;
@@ -3417,7 +3641,7 @@ void Renderer::render_board_content(const BoardView& view, const Overlay* overla
             render_result_message(view, ds);
             render_game_date(view, ds.game_date);
         }
-        render_guess_score(view, ds.guess_mode, ds.guess_score);
+        render_guess_score(view, ds);
     }
     if (!ds.free_mode) {
         if (ds.live_mode) {
@@ -3587,6 +3811,10 @@ void Renderer::render_board(const BoardView& view, const Overlay* overlay, const
 
     if (board_on_screen) render_box_selection(view, ds);
 
+    // Bullseye rings under the aiming point — below the cursor indicators drawn
+    // further down, so the cursor always stays readable on top of them.
+    if (board_on_screen) render_guess_heatmap(view, ds);
+
     // Colored point markers (joseki continuation dots) — filled circle with a
     // dark rim so every category color reads against the board background
     if (board_on_screen && ds.live_markers && ds.live_marker_count > 0) {
@@ -3644,7 +3872,8 @@ void Renderer::render_board(const BoardView& view, const Overlay* overlay, const
     // colour" right where the eye already is, and can't collide with anything.
 
     if (ds.popup_items && ds.popup_count > 0)
-        draw_popup_menu(ds.popup_title, ds.popup_items, ds.popup_count, ds.popup_index);
+        draw_popup_menu(ds.popup_title, ds.popup_items, ds.popup_count, ds.popup_index,
+                        ds.popup_styles);
     // Notifications go on top of everything except the cursor — above the board
     // coordinates (which otherwise overdrew them), the chalk layer and the popup.
     // Drawing them outside the cached texture also means a flash appearing or
@@ -3712,10 +3941,57 @@ void Renderer::draw_stone_at_px(int cx, int cy, int radius, int is_black, Uint8 
     shade_stone(cx, cy, radius, is_black, alpha);
 }
 
+// Bullseye heatmap: the scoring rings painted onto the board around the point the
+// player is aiming at, so the value of a guess is visible before committing to it.
+// Drawn outside the board cache with the other board decorations — it follows the
+// aim every frame and must never trigger a cache rebuild.
+void Renderer::render_guess_heatmap(const BoardView& view, const DrawState& ds) {
+    int r = ds.guess_heat_r, f = ds.guess_heat_f;
+    if (view.square <= 0) return;
+    if (r < 0 || r >= view.active_size || f < 0 || f >= view.active_size) return;
+
+    int sq = view.square;
+    SDL_SetRenderDrawBlendMode(sdl, SDL_BLENDMODE_BLEND);
+
+    // Outermost ring first so the inner, hotter shells paint over its edges.
+    static const Uint8 ring_alpha[3] = {150, 105, 60};
+    for (int d = 2; d >= 0; d--) {
+        SDL_Color c = GUESS_RING_COLOR[d];
+        SDL_SetRenderDrawColor(sdl, c.r, c.g, c.b, ring_alpha[d]);
+        for (int rr = r - d; rr <= r + d; rr++)
+            for (int ff = f - d; ff <= f + d; ff++) {
+                // Only the shell at exactly this distance — inner cells belong to a
+                // hotter ring and are painted by a later pass.
+                if (guess_ring_dist(rr, ff, r, f) != d) continue;
+                if (rr < 0 || rr >= view.active_size || ff < 0 || ff >= view.active_size)
+                    continue;
+                // 1px inset keeps the grid visible between cells, so the block reads
+                // as discrete scoring points rather than one smeared blob.
+                SDL_Rect cell = {view.offset_x + ff * sq + 1, view.offset_y + rr * sq + 1,
+                                 sq - 2, sq - 2};
+                SDL_RenderFillRect(sdl, &cell);
+            }
+    }
+
+    // Bullseye outline — the one cell worth full marks, called out so the centre is
+    // unmistakable once a stone or cursor is drawn over it.
+    SDL_SetRenderDrawColor(sdl, 255, 255, 255, 220);
+    SDL_Rect centre = {view.offset_x + f * sq + 1, view.offset_y + r * sq + 1, sq - 2, sq - 2};
+    SDL_RenderDrawRect(sdl, &centre);
+}
+
 void Renderer::render_software_cursor(const BoardView& view, const DrawState& ds) {
     if (ds.cursor_type == 0 || ds.cursor_x < 0 || ds.cursor_y < 0) return;
     int cx = ds.cursor_x, cy = ds.cursor_y;
     int sq = view.square > 0 ? view.square : 32;
+
+    // While aiming a guess the stone sits exactly on the bullseye rather than
+    // floating at the raw pointer, so the cell that scores is never ambiguous.
+    if (ds.cursor_snap_heat && ds.guess_heat_r >= 0 && ds.guess_heat_f >= 0
+        && view.square > 0) {
+        cx = view.offset_x + ds.guess_heat_f * view.square + view.square / 2;
+        cy = view.offset_y + ds.guess_heat_r * view.square + view.square / 2;
+    }
 
     if (ds.cursor_type >= 2) {
         // Stone cursor: filled circle with a yellow border ring

@@ -594,8 +594,9 @@ private:
     // mode. The single authority on which controls exist — pad navigation and mouse
     // hit-testing both validate against this, so neither can invent a row.
     void match_menu_cols(int out_sizes[3], int& col_count) const {
-        const int DISPLAY_ROWS = 9;  // SHOW COORDINATES, ENGINE ANALYSIS, CHAIN LINKS,
-                                     // SQUARE STONES, SQUARE GRID, SHOW TERRITORY,
+        const int DISPLAY_ROWS = 11; // SHOW COORDINATES, ENGINE ANALYSIS, CHAIN LINKS,
+                                     // SQUARE STONES, OCTAGON STONES, SQUARE GRID,
+                                     // SHOW TERRITORY, SHOW NEXT MOVE,
                                      // BOARD HUE, BOARD SAT, BOARD VAL
         out_sizes[0] = out_sizes[1] = out_sizes[2] = 0;
         if (match_menu_.ingame) {
@@ -605,7 +606,7 @@ private:
             // KATAGO SETTINGS: board size + strength only, no DISPLAY column.
             col_count    = 2;
             out_sizes[0] = 3;
-            out_sizes[1] = 8;   // 7 fixed ranks + ADAPTIVE
+            out_sizes[1] = 9;   // 8 fixed ranks + ADAPTIVE
         } else {
             col_count    = 3;
             out_sizes[0] = 3;
@@ -630,9 +631,9 @@ private:
     // plain-click-raises fallback — the one place that knows which DISPLAY row
     // maps to which Palette setter, so those three input paths can't drift apart.
     void adjust_board_hsv(int row, int delta) {
-        if      (row == 6) Palette::set_board_hue(Palette::BOARD_HUE + delta);
-        else if (row == 7) Palette::set_board_sat(Palette::BOARD_SAT + delta);
-        else if (row == 8) Palette::set_board_val(Palette::BOARD_VAL + delta);
+        if      (row ==  8) Palette::set_board_hue(Palette::BOARD_HUE + delta);
+        else if (row ==  9) Palette::set_board_sat(Palette::BOARD_SAT + delta);
+        else if (row == 10) Palette::set_board_val(Palette::BOARD_VAL + delta);
     }
 
     // Move the catalog selection, keep it scrolled into view, and refresh the
@@ -696,7 +697,8 @@ private:
 
     // Persisted across sessions to settings.txt: match_prefs_ (board size/speed/
     // KataGo mode/strength) plus the DISPLAY column toggles (show_coords_,
-    // kata_analysis_enabled_, chain_mode_, square_stones_, square_grid_) and the
+    // kata_analysis_enabled_, chain_mode_, square_stones_, octagon_stones_,
+    // square_grid_) and the
     // board HUE/SAT/VAL (Palette::BOARD_HUE/SAT/VAL — global engine state, not an
     // App member, so it needs no mirror field here). Loaded once at startup; saved
     // whenever the settings menu closes, since that's already the single commit
@@ -711,11 +713,36 @@ private:
         std::vector<int> rows, cols, colors;  // move list loaded from SGF
         int    pos        = 0;
         int    board_size = BOARD_SIZE;
+        float  komi       = 7.5f;   // from KM[]; handicap games aren't 7.5
         std::string black_name, white_name;
         Uint32 next_tick  = 0;
         GameState board;  // single board, updated move-by-move
+
+        // End-of-game territory fill. A catalog game almost always ends in a
+        // resignation, so there's no scoring phase to borrow — instead the last
+        // move is followed by a KataGo ownership query on the final position, and
+        // the answer paints every point (and every stone the map contradicts) in
+        // its owner's colour, the same fully-covered Chinese-rules board the
+        // stone-removal phase draws for the user's own games. Then it holds there
+        // long enough to actually read before the next game starts.
+        bool   end_phase  = false;  // last move played; querying or holding
+        bool   fill_ready = false;  // ownership[] valid — board is drawn filled
+        int    ownership[MAX_BOARD_SIZE][MAX_BOARD_SIZE] = {};  // 1=black, -1=white, 0=neutral
+        bool   dead[MAX_BOARD_SIZE][MAX_BOARD_SIZE]      = {};  // stones the map says belong to the other side
+        // Chinese count of the filled board: stones of each colour once the fill is
+        // applied. Raw counts, no komi — the two numbers the finished board shows.
+        int    area_black = -1;
+        int    area_white = -1;
     } demo_;
     bool demo_active_ = false;
+    // Hold after the fill appears, and the cap on waiting for KataGo to answer
+    // (it may not be running at all, in which case the final position just sits
+    // there for the hold and the screensaver moves on).
+    static constexpr Uint32 DEMO_FILL_HOLD_MS = 8000;
+    static constexpr Uint32 DEMO_FILL_WAIT_MS = 10000;
+    void demo_begin_end_fill();
+    void demo_clear_end_fill();
+    void demo_next_game();
 
     // Scoped screensaver playlist — set by start_catalog_autoplay() (X in the
     // catalog, on a game or a directory/player/year entry) to play a specific
@@ -729,9 +756,19 @@ private:
     bool chain_mode_       = true;
     // Stones drawn as beveled square tiles instead of circles (DISPLAY toggle, off by default)
     bool square_stones_    = false;
+    // Stones drawn as beveled octagonal tiles filling the whole cell, so orthogonal
+    // neighbours meet edge to edge (DISPLAY toggle, off by default). Mutually
+    // exclusive with square_stones_ — a stone has one shape.
+    bool octagon_stones_   = false;
     // Points sit at the centre of a checkerboard cell instead of a line crossing
     // (DISPLAY toggle, off by default) — see renderer.cpp's render_board_content.
     bool square_grid_      = false;
+    // Yellow ring on the move actually played next, during GAME_OVER review
+    // (DISPLAY toggle, off by default) — working out the next move yourself is
+    // most of the point of the review screen, and the ring hands you the answer
+    // before you've had a chance to look. Off, it blanks exactly as guess mode
+    // already blanks it.
+    bool show_next_move_   = false;
 
     // Live territory overlay during play (DISPLAY toggle, off by default) — a
     // KataGo ownership guess redrawn after every move, for demo/teaching games
@@ -779,9 +816,15 @@ private:
         std::string           label;
         bool                  confirm = false;
         std::function<void()> action;
+        // Section grouping. A heading is a label with no action — it is drawn in
+        // `color` and skipped by every form of selection. Command rows carry the
+        // muted tint of the section they belong to.
+        bool                  heading = false;
+        SDL_Color             color   = Palette::TEXT_WHITE;
     };
     std::vector<PopupItem>   popup_items_;
     std::vector<std::string> popup_labels_;  // display labels (armed row shows REALLY …?)
+    std::vector<PopupStyle>  popup_styles_;  // per-row colour/heading, or empty when flat
     std::string popup_title_;
     bool popup_active_ = false;
     int  popup_index_  = 0;
@@ -790,6 +833,14 @@ private:
     void close_popup_menu();
     void popup_sync_labels();
     void handle_popup_button(Uint8 btn);
+    // Nearest selectable row at or after `from`, stepping by `dir` and wrapping.
+    // Section headings are not selectable, so every move of the highlight —
+    // opening the menu included — goes through here rather than ±1.
+    int  popup_step(int from, int dir) const;
+    // Draw the popup over whatever is already on the backbuffer. The list
+    // screens all layer it the same way, and it has to carry the same styles
+    // the hit-test uses, so there is one copy of the call.
+    void draw_popup_overlay();
     // Mouse hit-test against the open popup, in the same terms make_ds draws it.
     // Returns the item index under the point, or -1; `inside_panel` distinguishes
     // "missed a row" from "clicked off the panel entirely" (which dismisses).
@@ -813,6 +864,10 @@ private:
     bool        my_accept_sent_           = false;
     Uint32      accept_resend_at_         = 0;   // next time to proactively resend cmd_accept_stones
     std::string stone_removal_all_removed_;  // all_removed string from last removed_stones event
+    // Toggled with Triangle/Y during STONE_REMOVAL: replaces the colored territory
+    // squares with the board fully filled in with real stones — dead-stone cells and
+    // empty territory both get the owning color's stone, like Chinese-rules scoring.
+    bool        stone_removal_fill_view_  = false;
 
     // Post-game analysis tree (valid in GAME_OVER state)
     std::unique_ptr<AnalysisNode>           analysis_root_;
@@ -866,6 +921,26 @@ private:
     // Advance analysis_cur_ one ply along the active-child main line — shared by
     // the L2/R2 step-forward button handler.
     void analysis_step_forward();
+
+    // ── Guess the move (GAME_OVER review of a pro game) ───────────────────────
+    // Aim with the board cursor, press cross to commit; the guess scores by ring
+    // distance from the move actually played (see guess_points() in renderer.hpp)
+    // and the review then steps forward onto that move. Only meaningful on a
+    // loaded file — a live game's own review has no moves left to guess.
+    bool guess_mode_        = false;
+    int  guess_score_       = 0;
+    int  guess_count_       = 0;
+    int  guess_last_points_ = -1;   // -1 = nothing guessed yet
+    int  guess_last_dist_   = -1;
+    bool guess_available() const {
+        return state_ == AppState::GAME_OVER && !review_path_.empty()
+               && analysis_cur_ && !analysis_cur_->children.empty();
+    }
+    void toggle_guess_mode();
+    void guess_commit();
+    // Scoreboard text for the status line (the live client's gutter is the status
+    // line's, so the guess HUD reports through it rather than drawing its own).
+    std::string guess_status() const;
 
     // ── OGS puzzle browsing / solving ─────────────────────────────────────────
     // Fetches run on detached worker threads (blocking libcurl); results land in a
@@ -965,8 +1040,26 @@ private:
     // favorites (manually toggled). Each lives in its own my_games/<user>/
     // subfolder as standard variation SGFs, drilled through the puzzle
     // player via a synthesized local OgsPuzzle.
-    enum class LocalPzKind { NONE, DRILLS, MISSED, FAVORITES };
+    //
+    // BOOK is the one that isn't personal: a problem set imported from a
+    // printed collection by tools/import_problem_pdf.py, living under
+    // problem_sets/<slug>/ with one folder per book. Unlike the other three
+    // there can be many of them at once, so each gets its own pin — hence
+    // local_book_, which says which one is open.
+    enum class LocalPzKind { NONE, DRILLS, MISSED, FAVORITES, BOOK };
     LocalPzKind local_pz_kind_ = LocalPzKind::NONE;   // puzzle browser PUZZLES view lists this local set
+
+    // One imported problem set. collection_id is the synthetic OGS-style id the
+    // importer stamped into every SGF (ZC[]), which is what makes the app's
+    // normal per-puzzle solved tracking work for book problems too. pin_id is
+    // the negative sentinel its collection-list row carries, purely for routing.
+    struct LocalBook {
+        int         pin_id = 0;
+        int         collection_id = 0;
+        std::string dir, name;
+    };
+    std::vector<LocalBook> local_books_;    // rebuilt by scan_local_books()
+    LocalBook              local_book_;     // the one currently open (BOOK kind)
     std::vector<std::string> drill_paths_;     // parallel to pz_list_ while local_pz_kind_ != NONE
     std::string drill_play_path_;              // file behind pz_ ("" = network OGS puzzle)
     std::string drill_edit_path_;              // overwrite target for SAVE ("" = save as new)
@@ -998,6 +1091,7 @@ private:
     std::string missed_puzzles_dir(bool create);
     std::string favorite_puzzles_dir(bool create);
     std::string current_local_pz_dir(bool create);   // resolves by local_pz_kind_
+    void        scan_local_books();                  // refresh local_books_ from problem_sets/
     bool save_drill(const std::string& path);
     void save_drill_from_current();
     void open_local_pz_list(LocalPzKind kind);
@@ -1672,11 +1766,13 @@ void App::load_demo_from_path(const std::string& path) {
     demo_.cols.clear();
     demo_.colors.clear();
     demo_.pos = 0;
+    demo_clear_end_fill();
 
     SgfGame g;
     if (!load_sgf(path, g) || g.move_count == 0) return;
 
     demo_.board_size = g.board_size;
+    demo_.komi       = g.komi;
     demo_.black_name = g.black_name;
     demo_.white_name = g.white_name;
 
@@ -1696,6 +1792,55 @@ void App::load_demo_from_path(const std::string& path) {
 
     demo_.next_tick = SDL_GetTicks() + 1000;
     demo_active_ = !demo_.rows.empty();
+}
+
+// Back out of the end-of-game fill — a new game is loading, or the viewer
+// stepped back into the game with L2 and the final position no longer applies.
+void App::demo_clear_end_fill() {
+    demo_.end_phase  = false;
+    demo_.fill_ready = false;
+    demo_.area_black = -1;
+    demo_.area_white = -1;
+    memset(demo_.ownership, 0, sizeof(demo_.ownership));
+    memset(demo_.dead,      0, sizeof(demo_.dead));
+}
+
+// Last move of a screensaver game has been played: ask KataGo who owns what in
+// the final position. The answer arrives on the reader thread and is picked up
+// by the poll loop, which paints the fill and restarts the hold from there —
+// so a slow answer still gets its full time on screen. next_tick is the
+// backstop: if the query is never answered (or never sent, KataGo not running),
+// the screensaver moves on by itself.
+void App::demo_begin_end_fill() {
+    demo_.end_phase  = true;
+    demo_.fill_ready = false;
+
+    KatagoProc& kp = kata_for(demo_.board_size);
+    if (kp.running() && !demo_.rows.empty()) {
+        bool no_dead[MAX_BOARD_SIZE][MAX_BOARD_SIZE] = {};
+        kp.query_ownership(demo_.board.board, demo_.board_size, no_dead, demo_.komi, 100);
+        demo_.next_tick = SDL_GetTicks() + DEMO_FILL_WAIT_MS;
+    } else {
+        demo_.next_tick = SDL_GetTicks() + DEMO_FILL_HOLD_MS;
+    }
+}
+
+// The hold is over (or the fill never came): on to the next game, either the
+// next entry of a catalog playlist or a fresh random pick.
+void App::demo_next_game() {
+    if (demo_playlist_pos_ >= 0) {
+        // Scoped autoplay (started from the catalog): advance through the
+        // remembered list in order; after one full lap, fall back to the
+        // default random screensaver rather than looping forever.
+        demo_playlist_pos_++;
+        if (demo_playlist_pos_ < (int)demo_playlist_.size()) {
+            load_demo_from_path(demo_playlist_[demo_playlist_pos_]);
+            return;
+        }
+        demo_playlist_.clear();
+        demo_playlist_pos_ = -1;
+    }
+    load_demo_game();
 }
 
 void App::load_demo_game() {
@@ -1918,6 +2063,10 @@ void App::handle_controller_button(Uint8 btn) {
                         demo_.board.place_stone(demo_.rows[i], demo_.cols[i], demo_.colors[i]);
                 }
             }
+            // Stepping by hand puts the game back in play: drop the end-of-game
+            // fill so the real position shows through (stepping to the end again
+            // re-triggers it on the next automatic tick).
+            demo_clear_end_fill();
             demo_.next_tick = SDL_GetTicks() + 1000;  // don't also auto-advance right after
             draw();
             return;
@@ -2160,7 +2309,7 @@ void App::handle_controller_button(Uint8 btn) {
         // BOARD HUE/SAT/VAL rows below — a no-op anywhere else in the menu.
         case SDL_CONTROLLER_BUTTON_LEFTSHOULDER:
         case SDL_CONTROLLER_BUTTON_RIGHTSHOULDER: {
-            if (match_menu_.focus_col != display_col || match_menu_.focus_row < 6) break;
+            if (match_menu_.focus_col != display_col || match_menu_.focus_row < 8) break;
             int delta = (btn == SDL_CONTROLLER_BUTTON_RIGHTSHOULDER) ? 5 : -5;
             adjust_board_hsv(match_menu_.focus_row, delta);
             renderer_->draw_match_menu(match_menu_);
@@ -2192,12 +2341,20 @@ void App::handle_controller_button(Uint8 btn) {
                     match_menu_.chain_sel = !match_menu_.chain_sel;
                     chain_mode_           = match_menu_.chain_sel;
                 } else if (r == 3) {
+                    // SQUARE and OCTAGON are one shape choice wearing two checkboxes:
+                    // ticking either clears the other, so the pair behaves like radio
+                    // buttons that can both be off (= round stones).
                     match_menu_.square_sel = !match_menu_.square_sel;
                     square_stones_         = match_menu_.square_sel;
+                    if (square_stones_) { match_menu_.octagon_sel = false; octagon_stones_ = false; }
                 } else if (r == 4) {
+                    match_menu_.octagon_sel = !match_menu_.octagon_sel;
+                    octagon_stones_         = match_menu_.octagon_sel;
+                    if (octagon_stones_) { match_menu_.square_sel = false; square_stones_ = false; }
+                } else if (r == 5) {
                     match_menu_.square_grid_sel = !match_menu_.square_grid_sel;
                     square_grid_                = match_menu_.square_grid_sel;
-                } else if (r == 5) {
+                } else if (r == 6) {
                     // Same "can't offer a control that can't work" pattern as ENGINE ANALYSIS
                     if (!match_menu_.territory_available) { /* no-op */ }
                     else {
@@ -2210,8 +2367,11 @@ void App::handle_controller_button(Uint8 btn) {
                             live_own_query_after_ = 0;
                         }
                     }
+                } else if (r == 7) {
+                    match_menu_.next_move_sel = !match_menu_.next_move_sel;
+                    show_next_move_           = match_menu_.next_move_sel;
                 } else {
-                    adjust_board_hsv(r, 5);   // rows 6-8; the [-]/[+] buttons handle their own click before reaching here
+                    adjust_board_hsv(r, 5);   // rows 8-10; the [-]/[+] buttons handle their own click before reaching here
                 }
             } else if (match_menu_.focus_col == 0) {
                 if (match_menu_.katago_mode) {
@@ -2363,6 +2523,10 @@ void App::handle_controller_button(Uint8 btn) {
             open_popup_menu();
         else if (btn == SDL_CONTROLLER_BUTTON_A)
             accept_stone_removal();
+        else if (btn == SDL_CONTROLLER_BUTTON_Y) {
+            stone_removal_fill_view_ = !stone_removal_fill_view_;
+            draw();
+        }
         return;
     }
 
@@ -2424,6 +2588,10 @@ void App::handle_controller_button(Uint8 btn) {
             }
             break;
         case SDL_CONTROLLER_BUTTON_A:
+            // Guessing owns cross while it's on: committing a guess is the whole
+            // interaction, and branching a hypothetical line mid-quiz would desync
+            // the very main line being guessed against.
+            if (guess_mode_) { guess_commit(); break; }
             if (analysis_cur_) {
                 int col = game_.cursor_f, row = game_.cursor_r;
                 // Setup-stone mode: edit the current node's board directly —
@@ -2510,10 +2678,37 @@ void App::handle_controller_button(Uint8 btn) {
 // confirm press) is rewritten as a question so the state is visible in place.
 void App::popup_sync_labels() {
     popup_labels_.clear();
-    for (int i = 0; i < (int)popup_items_.size(); i++)
+    popup_styles_.clear();
+    bool sectioned = false;
+    for (const auto& it : popup_items_)
+        if (it.heading) { sectioned = true; break; }
+    for (int i = 0; i < (int)popup_items_.size(); i++) {
         popup_labels_.push_back(i == popup_armed_
                                     ? "REALLY " + popup_items_[i].label + "?"
                                     : popup_items_[i].label);
+        // Styles are all-or-nothing per menu: a short popup with no headings
+        // stays the plain white list it has always been rather than picking up
+        // an indent and a tint for no reason.
+        if (sectioned)
+            popup_styles_.push_back({popup_items_[i].color, popup_items_[i].heading});
+    }
+}
+
+int App::popup_step(int from, int dir) const {
+    int n = (int)popup_items_.size();
+    if (n == 0) return 0;
+    for (int k = 1; k <= n; k++) {
+        int i = ((from + dir * k) % n + n) % n;
+        if (!popup_items_[i].heading) return i;
+    }
+    return from;   // nothing selectable at all — shouldn't happen, but don't hang
+}
+
+void App::draw_popup_overlay() {
+    if (!popup_active_) return;
+    renderer_->draw_popup_menu(popup_title_.c_str(), popup_labels_.data(),
+                               (int)popup_labels_.size(), popup_index_,
+                               popup_styles_.empty() ? nullptr : popup_styles_.data());
 }
 
 int App::popup_hit(int mx, int my, bool* inside_panel) const {
@@ -2521,21 +2716,32 @@ int App::popup_hit(int mx, int my, bool* inside_panel) const {
     if (!popup_active_ || popup_labels_.empty()) return -1;
     // Same arguments make_ds hands the renderer, so the hit-test matches what's drawn.
     return renderer_->popup_item_at(popup_title_.c_str(), popup_labels_.data(),
-                                    (int)popup_labels_.size(), mx, my, inside_panel);
+                                    (int)popup_labels_.size(), mx, my, inside_panel,
+                                    popup_styles_.empty() ? nullptr : popup_styles_.data());
 }
 
 void App::close_popup_menu() {
     popup_active_ = false;
     popup_items_.clear();
     popup_labels_.clear();
+    popup_styles_.clear();
     popup_index_ = 0;
     popup_armed_ = -1;
 }
 
 void App::open_popup_menu() {
     popup_items_.clear();
+    // Colour of the section currently being filled; every add() after a
+    // section() inherits it, so the grouping is stated once per block rather
+    // than repeated on every row.
+    SDL_Color section_color = Palette::TEXT_WHITE;
     auto add = [&](std::string label, std::function<void()> fn, bool confirm = false) {
-        popup_items_.push_back({std::move(label), confirm, std::move(fn)});
+        popup_items_.push_back({std::move(label), confirm, std::move(fn), false,
+                                Palette::menu_item_tint(section_color)});
+    };
+    auto section = [&](const char* label, SDL_Color color) {
+        section_color = color;
+        popup_items_.push_back({label, false, nullptr, true, color});
     };
     auto lobby = [this]() {
         state_ = AppState::LOBBY;
@@ -2545,6 +2751,11 @@ void App::open_popup_menu() {
     switch (state_) {
     case AppState::LOBBY:
         popup_title_ = "LOBBY";
+        // The lobby menu is the one long enough to need grouping: a dozen-odd
+        // commands that fall into four plain jobs — start a game, train against
+        // problems, look at games, change settings. Ordered by how often each is
+        // reached, so playing is at the top and settings near the bottom.
+        section("PLAY", Palette::MENU_PLAY);
         // Two separate items rather than one that changes meaning: which kind of
         // game you start is chosen here, explicitly, and never depends on what a
         // settings screen was last showing.
@@ -2553,22 +2764,28 @@ void App::open_popup_menu() {
             state_ = AppState::SEARCHING;
             set_status("SEARCHING...");
         });
+        if (!kata_human_model_.empty())
+            add("PLAY VS KATAGO", [this]() { start_local_game(); });
         add("MY GAMES (CORRESPONDENCE)", [this]() { open_corr_list(); });
         add("CHALLENGES",               [this]() { open_challenges(); });
         add("CREATE CHALLENGE",         [this]() { open_challenge_create(); });
-        if (!kata_human_model_.empty())
-            add("PLAY VS KATAGO", [this]() { start_local_game(); });
-        add("MATCH SETTINGS",  [this]() { open_settings_menu(); });
+
+        section("TRAIN", Palette::MENU_TRAIN);
+        add("PUZZLES",         [this]() { open_puzzle_browser(); });
+        add("WHO WON? QUIZ",   [this]() { open_who_won(); });
+        add("JOSEKI EXPLORER", [this]() { open_joseki_explorer(); });
+
+        section("REVIEW", Palette::MENU_REVIEW);
+        add("GAME CATALOG",  [this]() { open_game_catalog(); });
+        add("PRO GAMES",     [this]() { open_pro_catalog(); });
+        add("FREE ANALYSIS", [this]() { start_free_analysis(); });
+
+        section("SETTINGS", Palette::MENU_SETTINGS);
+        add("MATCH SETTINGS", [this]() { open_settings_menu(); });
         // Same gate as PLAY VS KATAGO — no point offering strength settings for an
         // engine that isn't configured.
         if (!kata_human_model_.empty())
             add("KATAGO SETTINGS", [this]() { open_katago_settings(); });
-        add("GAME CATALOG",    [this]() { open_game_catalog(); });
-        add("PRO GAMES",       [this]() { open_pro_catalog(); });
-        add("PUZZLES",         [this]() { open_puzzle_browser(); });
-        add("WHO WON? QUIZ",   [this]() { open_who_won(); });
-        add("JOSEKI EXPLORER", [this]() { open_joseki_explorer(); });
-        add("FREE ANALYSIS",   [this]() { start_free_analysis(); });
         break;
 
     case AppState::SEARCHING:
@@ -2637,12 +2854,19 @@ void App::open_popup_menu() {
         popup_title_ = "SCORING";
         add(is_local_game_ ? "SHOW RESULT" : "ACCEPT SCORE",
             [this]() { accept_stone_removal(); });
+        add(stone_removal_fill_view_ ? "SHOW TERRITORY SQUARES" : "FILL TERRITORY WITH STONES",
+            [this]() { stone_removal_fill_view_ = !stone_removal_fill_view_; });
         add("SETTINGS", [this]() { open_settings_menu(); });
         break;
 
     case AppState::GAME_OVER:
         popup_title_ = "REVIEW MENU";
         add("RETURN TO LOBBY", [this]() { return_to_lobby(); });
+        // Guess the move — only offered on a file open for review, which is the
+        // only place there is a next move to be scored against.
+        if (guess_mode_ || guess_available())
+            add(guess_mode_ ? "EXIT GUESS THE MOVE" : "GUESS THE MOVE",
+                [this]() { toggle_guess_mode(); });
         // Fork the position on screen into a live game vs KataGo (needs the human
         // SL model, same gate as the match menu's VS KATAGO mode). Strength comes
         // from the configured KataGo strength in match settings.
@@ -2724,6 +2948,7 @@ void App::open_popup_menu() {
             pz_index_ >= 0 && pz_index_ < (int)drill_paths_.size()) {
             const char* kind_label = local_pz_kind_ == LocalPzKind::DRILLS    ? "DRILL"
                                     : local_pz_kind_ == LocalPzKind::MISSED   ? "MISSED PUZZLE"
+                                    : local_pz_kind_ == LocalPzKind::BOOK      ? "PROBLEM"
                                                                               : "FAVORITE";
             add(std::string("RENAME ") + kind_label + " (KEYBOARD)", [this]() {
                 drill_rename_buf_    = pz_list_[pz_index_].second;   // prefill current name
@@ -2775,14 +3000,21 @@ void App::open_popup_menu() {
     // Chalk annotation, offered everywhere — it's a screen overlay, not tied to any
     // one screen. Listed as well as bound to SPACE so it's discoverable without
     // knowing the key.
+    // This tail is shared by every popup, so it only takes a heading on the menus
+    // that already have them: a two-item popup does not need dividing up.
+    for (const auto& it : popup_items_)
+        if (it.heading) { section("SCREEN", Palette::MENU_SCREEN); break; }
     add(draw_mode_ ? "STOP DRAWING" : "DRAW ON SCREEN", [this]() { toggle_draw_mode(); });
     if (renderer_->annot_has_content())
         add("CLEAR DRAWING", [this]() { renderer_->annot_clear(); draw(); });
     add("QUIT", [this]() { quit_requested_ = true; }, /*confirm=*/true);
 
     popup_active_ = true;
-    popup_index_  = 0;
     popup_armed_  = -1;
+    // Row 0 is a section heading whenever the menu is grouped, so start on the
+    // first row that can actually be chosen.
+    popup_index_  = (!popup_items_.empty() && popup_items_[0].heading)
+                        ? popup_step(0, +1) : 0;
     popup_sync_labels();
     draw();
 }
@@ -2792,13 +3024,13 @@ void App::handle_popup_button(Uint8 btn) {
     if (n == 0) { close_popup_menu(); draw(); return; }
     switch (btn) {
     case SDL_CONTROLLER_BUTTON_DPAD_UP:
-        popup_index_ = (popup_index_ - 1 + n) % n;
+        popup_index_ = popup_step(popup_index_, -1);
         popup_armed_ = -1;
         popup_sync_labels();
         draw();
         break;
     case SDL_CONTROLLER_BUTTON_DPAD_DOWN:
-        popup_index_ = (popup_index_ + 1) % n;
+        popup_index_ = popup_step(popup_index_, +1);
         popup_armed_ = -1;
         popup_sync_labels();
         draw();
@@ -2864,6 +3096,7 @@ void App::accept_stone_removal() {
 void App::return_to_lobby() {
     save_companion();  // persist scores + marks before leaving review
     is_local_game_ = false;
+    guess_mode_    = false;   // the quiz belongs to the review being left
     state_ = AppState::LOBBY;
     game_.history_pos = -1;
     analysis_root_.reset();
@@ -3123,7 +3356,104 @@ std::string App::current_local_pz_dir(bool create) {
     switch (local_pz_kind_) {
         case LocalPzKind::MISSED:    return missed_puzzles_dir(create);
         case LocalPzKind::FAVORITES: return favorite_puzzles_dir(create);
+        case LocalPzKind::BOOK:      return local_book_.dir;   // already resolved when opened
         default:                     return drills_dir(create);
+    }
+}
+
+// Imported problem books live outside my_games/ — they aren't anyone's game
+// history, they're shared content that travels with the repo (and with a
+// packaged release, hence the same exe_dir()/../../ probe as the game library).
+static std::string problem_sets_root() {
+    std::string dir = exe_dir() + "problem_sets";
+    if (!is_dir(dir)) dir = exe_dir() + "../../problem_sets";
+    return dir;
+}
+
+// Read one integer SGF property (ZI[]/ZC[]) out of a file's root node without
+// parsing the whole thing — listing a 400-problem set shouldn't mean building
+// 400 move trees just to learn 400 ids. The root is the first node in the
+// file, so a peek at the head is enough; 0 means absent.
+static int sgf_peek_int(const std::string& path, const char* prop) {
+    FILE* f = Catalog::fopen_utf8(path, "rb");
+    if (!f) return 0;
+    char head[4096];
+    size_t n = fread(head, 1, sizeof(head) - 1, f);
+    fclose(f);
+    head[n] = '\0';
+    std::string pat = std::string(prop) + "[";
+    const char* at = strstr(head, pat.c_str());
+    return at ? atoi(at + pat.size()) : 0;
+}
+
+// One line of "key=value" metadata out of a set.txt, or "" if absent.
+static std::string set_meta(const std::string& path, const char* key) {
+    FILE* f = Catalog::fopen_utf8(path, "r");
+    if (!f) return "";
+    char line[512];
+    std::string want = std::string(key) + "=";
+    std::string val;
+    while (fgets(line, sizeof(line), f)) {
+        std::string s(line);
+        while (!s.empty() && (s.back() == '\n' || s.back() == '\r')) s.pop_back();
+        if (s.compare(0, want.size(), want) == 0) { val = s.substr(want.size()); break; }
+    }
+    fclose(f);
+    return val;
+}
+
+// Enumerate problem_sets/<slug>/ — every subfolder holding at least one SGF is
+// a book. Display name and collection id come from its set.txt; a folder
+// written by hand without one still works, it just loses solved tracking
+// (id 0) and shows under its folder name.
+void App::scan_local_books() {
+    local_books_.clear();
+    std::string root = problem_sets_root();
+    if (!is_dir(root)) return;
+
+    std::vector<std::string> names;
+#ifdef _WIN32
+    WIN32_FIND_DATAW fd;
+    HANDLE h = FindFirstFileW(
+        Catalog::utf8_to_wide(Catalog::join_path(root, "*")).c_str(), &fd);
+    if (h == INVALID_HANDLE_VALUE) return;
+    do {
+        if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) continue;
+        std::string name = Catalog::wide_to_utf8(fd.cFileName);
+        if (name == "." || name == "..") continue;
+        names.push_back(name);
+    } while (FindNextFileW(h, &fd));
+    FindClose(h);
+#else
+    DIR* d = opendir(root.c_str());
+    if (!d) return;
+    struct dirent* ent;
+    while ((ent = readdir(d)) != nullptr) {
+        std::string name = ent->d_name;
+        if (name == "." || name == "..") continue;
+        if (!is_dir(Catalog::join_path(root, name))) continue;
+        names.push_back(name);
+    }
+    closedir(d);
+#endif
+    std::sort(names.begin(), names.end(),
+              [](const std::string& a, const std::string& b) { return str_icmp(a, b) < 0; });
+
+    for (const std::string& name : names) {
+        LocalBook b;
+        b.dir = Catalog::join_path(root, name);
+        std::vector<std::string> files;
+        if (!Catalog::list_sgf_files(b.dir, files) || files.empty()) continue;
+        b.name          = set_meta(Catalog::join_path(b.dir, "set.txt"), "name");
+        b.collection_id = atoi(set_meta(Catalog::join_path(b.dir, "set.txt"), "id").c_str());
+        if (b.name.empty()) {
+            b.name = name;
+            for (char& c : b.name) if (c == '_' || c == '-') c = ' ';
+        }
+        // Pin ids start below the three fixed local pins (-1..-3) and are
+        // assigned by scan order, so a row's id always resolves back here.
+        b.pin_id = -10 - (int)local_books_.size();
+        local_books_.push_back(std::move(b));
     }
 }
 
@@ -3756,13 +4086,13 @@ void App::load_companion() {
 
 // ── Local game vs KataGo ─────────────────────────────────────────────────────
 
-static const char* const KATA_GTP_PROFILES[7] = {
+static const char* const KATA_GTP_PROFILES[8] = {
     "preaz_20k", "preaz_15k", "preaz_10k", "preaz_5k",
-    "preaz_1k",  "preaz_1d",  "preaz_5d"
+    "preaz_1k",  "preaz_1d",  "preaz_5d",  "preaz_9d"
 };
-static const char* const KATA_GTP_NAMES[7] = {
+static const char* const KATA_GTP_NAMES[8] = {
     "20 KYU", "15 KYU", "10 KYU", "5 KYU",
-    "1 KYU",  "1 DAN",  "5 DAN"
+    "1 KYU",  "1 DAN",  "5 DAN",  "9 DAN"
 };
 
 // Adaptive strength: a fractional position on KataGo's full human-profile ladder,
@@ -3785,11 +4115,11 @@ void App::start_local_game() {
     int bs = kSizes[std::max(0, std::min(2, match_prefs_.katago_size))];
 
     int str = match_prefs_.katago_str;
-    if (str < 0 || str > 7) str = 2;
+    if (str < 0 || str > 8) str = 2;
 
-    // Index 7 = ADAPTIVE: resolve the fractional rating to the nearest profile rank
+    // Index 8 = ADAPTIVE: resolve the fractional rating to the nearest profile rank
     std::string profile, opp_label;
-    adaptive_game_ = (str == 7);
+    adaptive_game_ = (str == 8);
     if (adaptive_game_) {
         int idx = (int)std::lround(adaptive_rank_);
         idx = std::max(0, std::min(KATA_RANK_MAX, idx));
@@ -3893,9 +4223,9 @@ void App::start_practice_from_position() {
     bool      pos_turn_is_black = (pos.turn_is_black == 1);
 
     int str = match_prefs_.katago_str;
-    if (str < 0 || str > 7) str = 2;
+    if (str < 0 || str > 8) str = 2;
     std::string profile, opp_label;
-    if (str == 7) {
+    if (str == 8) {
         int idx = std::max(0, std::min(KATA_RANK_MAX, (int)std::lround(adaptive_rank_)));
         profile   = kata_rank_profile(idx);
         opp_label = "ADAPTIVE (" + kata_rank_label(idx) + ")";
@@ -4045,6 +4375,7 @@ void App::begin_local_stone_removal(const std::string& forced_result) {
     state_ = AppState::STONE_REMOVAL;
     close_popup_menu();  // a GAME MENU popup is stale once scoring starts
     stone_removal_has_ogs_territory_ = false;
+    stone_removal_fill_view_ = false;
     game_.history_pos = -1;
     memset(game_.dead_stones, 0, sizeof(game_.dead_stones));
     memset(game_.ownership,   0, sizeof(game_.ownership));
@@ -4091,13 +4422,18 @@ void App::load_settings() {
         else if (k == "analysis")      kata_analysis_enabled_  = val != 0;
         else if (k == "chain_mode")    chain_mode_             = val != 0;
         else if (k == "square_stones") square_stones_          = val != 0;
+        else if (k == "octagon_stones") octagon_stones_        = val != 0;
         else if (k == "square_grid")   square_grid_            = val != 0;
         else if (k == "show_territory") show_live_ownership_   = val != 0;
+        else if (k == "show_next_move") show_next_move_        = val != 0;
         else if (k == "board_hue")     Palette::set_board_hue(val);
         else if (k == "board_sat")     Palette::set_board_sat(val);
         else if (k == "board_val")     Palette::set_board_val(val);
     }
     fclose(f);
+    // A hand-edited file could tick both shapes; the menu can't. Square loses, to
+    // match the renderer's own tie-break, so the file and the screen never disagree.
+    if (octagon_stones_) square_stones_ = false;
 }
 
 void App::save_settings() {
@@ -4115,8 +4451,10 @@ void App::save_settings() {
     fprintf(f, "analysis %d\n",      kata_analysis_enabled_   ? 1 : 0);
     fprintf(f, "chain_mode %d\n",    chain_mode_              ? 1 : 0);
     fprintf(f, "square_stones %d\n", square_stones_           ? 1 : 0);
+    fprintf(f, "octagon_stones %d\n", octagon_stones_         ? 1 : 0);
     fprintf(f, "square_grid %d\n",   square_grid_             ? 1 : 0);
     fprintf(f, "show_territory %d\n", show_live_ownership_    ? 1 : 0);
+    fprintf(f, "show_next_move %d\n", show_next_move_         ? 1 : 0);
     fprintf(f, "board_hue %d\n",     Palette::BOARD_HUE);
     fprintf(f, "board_sat %d\n",     Palette::BOARD_SAT);
     fprintf(f, "board_val %d\n",     Palette::BOARD_VAL);
@@ -4353,9 +4691,11 @@ void App::open_settings_menu() {
     match_menu_.analysis_available = kata_.running() || kata_9_.running();
     match_menu_.chain_sel       = chain_mode_;
     match_menu_.square_sel      = square_stones_;
+    match_menu_.octagon_sel     = octagon_stones_;
     match_menu_.square_grid_sel = square_grid_;
     match_menu_.territory_sel       = show_live_ownership_;
     match_menu_.territory_available = kata_.running() || kata_9_.running();
+    match_menu_.next_move_sel   = show_next_move_;
     state_ = AppState::MATCH_MENU;
     renderer_->draw_match_menu(match_menu_);
 }
@@ -4556,6 +4896,13 @@ void App::pz_rebuild_display() {
     add_local_pin(-1, "[MY DRILLS]",        drills_dir(false));
     add_local_pin(-2, "[MISSED PUZZLES]",   missed_puzzles_dir(false));
     add_local_pin(-3, "[FAVORITE PUZZLES]", favorite_puzzles_dir(false));
+
+    // Imported problem books, below the personal sets. Their rows carry the
+    // routing pin id; the real collection id (for progress colouring) is
+    // looked back up through local_books_ — see draw_puzzle_browser.
+    scan_local_books();
+    for (const auto& b : local_books_)
+        add_local_pin(b.pin_id, ("[" + b.name + "]").c_str(), b.dir);
     pz_display_cols_.insert(pz_display_cols_.begin(), local_pins.begin(), local_pins.end());
 }
 
@@ -4574,6 +4921,11 @@ void App::open_local_pz_list(LocalPzKind kind) {
         dir = favorite_puzzles_dir(false);
         title = "FAVORITE PUZZLES";
         empty_msg = "NO FAVORITES SAVED YET";
+        break;
+    case LocalPzKind::BOOK:
+        dir = local_book_.dir;            // set by the caller that picked the book
+        title = local_book_.name;
+        empty_msg = "NO PROBLEMS IN THIS SET";
         break;
     default:
         dir = drills_dir(false);
@@ -4605,13 +4957,19 @@ void App::open_local_pz_list(LocalPzKind kind) {
         // spaces too; sanitizing maps them back on commit, so it round-trips.
         for (char& c : stem)
             if (c == '_') c = ' ';
-        pz_list_.push_back({-(i + 1), stem});
+        // The id is a throwaway sentinel for personal sets (nothing reads it —
+        // opening and stepping both go by index). Book problems carry a real
+        // ZI[] though, so read it back and the list can mark solved ones the
+        // same way an OGS collection does.
+        int id = (kind == LocalPzKind::BOOK) ? sgf_peek_int(drill_paths_.back(), "ZI")
+                                             : -(i + 1);
+        pz_list_.push_back({id ? id : -(i + 1), stem});
     }
     local_pz_kind_   = kind;
     pz_view_         = PzView::PUZZLES;
     pz_list_title_   = title;
     pz_index_        = 0;
-    pz_open_col_id_  = 0;
+    pz_open_col_id_  = (kind == LocalPzKind::BOOK) ? local_book_.collection_id : 0;
     drill_thumb_idx_ = -1;   // file list may have changed — recompute the preview
     draw();
 }
@@ -5131,9 +5489,7 @@ void App::draw_corr_list() {
     corr_lines_drawn_ = (int)lines.size();
     renderer_->draw_list_screen(title.c_str(), lines, corr_index_, footer.c_str(),
                                 self_present, colors.data(), corr_hover_);
-    if (popup_active_)
-        renderer_->draw_popup_menu(popup_title_.c_str(), popup_labels_.data(),
-                                   (int)popup_labels_.size(), popup_index_);
+    draw_popup_overlay();
     if (!self_present)
         SDL_RenderPresent(renderer_->sdl);
 }
@@ -5399,9 +5755,7 @@ void App::draw_challenges() {
     chal_lines_drawn_ = (int)lines.size();
     renderer_->draw_list_screen(title.c_str(), lines, chal_index_, footer.c_str(),
                                 self_present, colors.data(), chal_hover_);
-    if (popup_active_)
-        renderer_->draw_popup_menu(popup_title_.c_str(), popup_labels_.data(),
-                                   (int)popup_labels_.size(), popup_index_);
+    draw_popup_overlay();
     if (!self_present)
         SDL_RenderPresent(renderer_->sdl);
 }
@@ -5534,9 +5888,7 @@ void App::draw_challenge_create() {
     cc_lines_drawn_ = (int)lines.size();
     renderer_->draw_list_screen("NEW CHALLENGE (CORRESPONDENCE)", lines, cc_row_,
                                 footer.c_str(), self_present, colors.data(), cc_hover_);
-    if (popup_active_)
-        renderer_->draw_popup_menu(popup_title_.c_str(), popup_labels_.data(),
-                                   (int)popup_labels_.size(), popup_index_);
+    draw_popup_overlay();
     if (!self_present)
         SDL_RenderPresent(renderer_->sdl);
 }
@@ -6145,7 +6497,14 @@ void App::draw_puzzle_browser() {
             }
             ln += "  BY " + c.owner;
             lines.push_back(ln);
-            auto it = solved_per_col.find(c.id);
+            // Book pins list under a routing sentinel, but their problems are
+            // solved-tracked under the real collection id the importer stamped
+            // in — resolve through local_books_ so they colour like any other.
+            int col_id = c.id;
+            if (c.id <= -10)
+                for (const auto& b : local_books_)
+                    if (b.pin_id == c.id) { col_id = b.collection_id; break; }
+            auto it = solved_per_col.find(col_id);
             int solved = (it != solved_per_col.end()) ? it->second : 0;
             colors.push_back(c.puzzle_count > 0 && solved >= c.puzzle_count ? PZ_DONE
                              : solved > 0                                   ? PZ_STARTED
@@ -6153,11 +6512,21 @@ void App::draw_puzzle_browser() {
         }
         footer = GLYPH_PS_CROSS " OPEN   LEFT/RIGHT: PAGE   " GLYPH_PS_CIRCLE " LOBBY";
     } else if (local_pz_kind_ != LocalPzKind::NONE) {
-        // Local puzzle sets: no OGS solved tracking (ids are negative sentinels)
-        title = pz_list_title_ + "  (" + std::to_string((int)pz_list_.size()) + ")";
+        // Personal sets have no solved tracking (their ids are negative
+        // sentinels); imported books do, so they get the same [X]/[ ] marks
+        // and solved count an OGS collection list shows.
+        bool tracked = (local_pz_kind_ == LocalPzKind::BOOK);
+        int solved_here = 0;
+        if (tracked)
+            for (const auto& p : pz_list_)
+                if (pz_solved_ids_.count(p.first)) solved_here++;
+        title = pz_list_title_ + "  (" +
+                (tracked ? std::to_string(solved_here) + "/" : "") +
+                std::to_string((int)pz_list_.size()) + (tracked ? " SOLVED)" : ")");
         for (const auto& p : pz_list_) {
-            lines.push_back(p.second);
-            colors.push_back(PZ_NO_COLOR);
+            bool solved = tracked && pz_solved_ids_.count(p.first) != 0;
+            lines.push_back(tracked ? (solved ? "[X] " : "[ ] ") + p.second : p.second);
+            colors.push_back(solved ? PZ_DONE : PZ_NO_COLOR);
         }
         footer = drill_rename_active_
                      ? "NEW NAME: " + drill_rename_buf_ + "_   ENTER=OK   ESC=CANCEL"
@@ -6216,9 +6585,7 @@ void App::draw_puzzle_browser() {
         renderer_->render_mini_board(w - size - 40, (h - size) / 2, size,
                                      drill_thumb_, drill_thumb_bs_);
     }
-    if (popup_active_)
-        renderer_->draw_popup_menu(popup_title_.c_str(), popup_labels_.data(),
-                                   (int)popup_labels_.size(), popup_index_);
+    draw_popup_overlay();
     if (!self_present)
         SDL_RenderPresent(renderer_->sdl);
 }
@@ -6269,7 +6636,15 @@ void App::handle_puzzle_button(Uint8 btn) {
             if (pz_loading_ || total == 0 || pz_index_ >= total) break;
             if (pz_view_ == PzView::COLLECTIONS) {
                 const auto& c = pz_display_cols_[pz_index_];
-                if (c.id < 0) {   // local pin ([MY DRILLS]/[MISSED]/[FAVORITES]) — no fetch
+                if (c.id < 0) {   // local pin (personal set or imported book) — no fetch
+                    if (c.id <= -10) {
+                        local_book_ = LocalBook{};   // never fall back on the last one opened
+                        for (const auto& b : local_books_)
+                            if (b.pin_id == c.id) { local_book_ = b; break; }
+                        if (local_book_.dir.empty()) break;   // row outlived its folder
+                        open_local_pz_list(LocalPzKind::BOOK);
+                        break;
+                    }
                     LocalPzKind kind = c.id == -1 ? LocalPzKind::DRILLS
                                      : c.id == -2 ? LocalPzKind::MISSED
                                                   : LocalPzKind::FAVORITES;
@@ -6443,6 +6818,71 @@ void App::analysis_step_forward() {
     kata_query_after_ = SDL_GetTicks() + 1000;
 }
 
+// ── Guess the move ────────────────────────────────────────────────────────────
+
+void App::toggle_guess_mode() {
+    if (!guess_mode_ && !guess_available()) {
+        flash_       = "GUESS MODE NEEDS A GAME OPEN FOR REVIEW";
+        flash_until_ = SDL_GetTicks() + 2000;
+        draw();
+        return;
+    }
+    guess_mode_ = !guess_mode_;
+    if (guess_mode_) {
+        // Fresh scoreboard per session — a score carried over from an earlier game
+        // would be measured against a different number of guesses.
+        guess_score_ = 0; guess_count_ = 0;
+        guess_last_points_ = -1; guess_last_dist_ = -1;
+        set_status(guess_status());
+    } else {
+        set_status("ANALYSIS — MOVE " + std::to_string(analysis_cur_ ? analysis_cur_->depth : 0));
+    }
+    close_popup_menu();
+    draw();
+}
+
+// Score the cursor against the move actually played next, then step onto it so the
+// answer is immediately visible on the board.
+void App::guess_commit() {
+    if (!analysis_cur_ || analysis_cur_->children.empty()) return;
+    const AnalysisNode* next = analysis_cur_->children[analysis_cur_->active_child].get();
+    // Passes carry no point to aim at, so they are stepped over rather than scored.
+    if (next->move_row < 0 || next->move_col < 0) { analysis_step_forward(); draw(); return; }
+
+    int dist = guess_ring_dist(game_.cursor_r, game_.cursor_f, next->move_row, next->move_col);
+    guess_last_dist_   = dist;
+    guess_last_points_ = guess_points(dist);
+    guess_score_      += guess_last_points_;
+    guess_count_++;
+
+    analysis_step_forward();
+    sound_.play_stone(/*mine=*/true);
+    // Leaving the cursor on the guess (rather than snapping it to the answer) keeps
+    // the heatmap where the eye already is, so the played stone landing inside or
+    // outside those rings is the feedback.
+    if (!guess_available()) guess_mode_ = false;   // ran out of moves to guess
+    set_status(guess_status());
+    draw();
+}
+
+// Broken into lines because the status line lays out embedded newlines itself; one
+// long line would just shrink the whole block down to fit the gutter width.
+std::string App::guess_status() const {
+    std::string s = "GUESS THE MOVE";
+    if (guess_count_ > 0) {
+        int best = guess_count_ * GUESS_MAX_POINTS;
+        s += "\n" + std::to_string(guess_score_) + " / " + std::to_string(best) +
+             "  (" + std::to_string((guess_score_ * 100 + best / 2) / best) + "%)";
+    }
+    if (guess_last_points_ > 0)
+        s += "\n+" + std::to_string(guess_last_points_) +
+             (guess_last_dist_ == 0 ? "  BULLSEYE!" : "  CLOSE");
+    else if (guess_last_points_ == 0)
+        s += "\nMISS";
+    s += guess_mode_ ? "\n" GLYPH_PS_CROSS "=GUESS   G=EXIT" : "\nEND OF GAME";
+    return s;
+}
+
 void App::load_sgf_for_review(const std::string& path) {
     SgfGame g;
     if (!load_sgf(path, g)) return;
@@ -6509,6 +6949,7 @@ void App::load_sgf_for_review(const std::string& path) {
     bg_analysis_busy_  = false;
     companion_path_    = path.substr(0, path.rfind('.')) + ".katago";
     review_path_       = path;  // enables L3/R3 cycling through sibling files
+    guess_mode_        = false; // a new game means a new quiz, never a carried score
     load_companion();   // pre-populate scores and marks if the file exists
 
     // Build analysis tree from the replayed history
@@ -6954,6 +7395,7 @@ void App::handle_net_msg(const NetMsg& msg) {
     case NetMsgType::RESUME_PLAY:
         if (state_ == AppState::STONE_REMOVAL || state_ == AppState::PLAYING) {
             stone_removal_has_ogs_territory_ = false;
+            stone_removal_fill_view_ = false;
             my_accept_sent_ = false;
             stone_removal_all_removed_.clear();
             state_ = AppState::PLAYING;
@@ -7111,10 +7553,18 @@ Renderer::DrawState App::make_ds() {
                        std::to_string((int)game_.history.size() - 1);
         status_cstr = hist_status_.c_str();
     }
-    if (state_ == AppState::GAME_OVER && analysis_cur_) {
+    if (state_ == AppState::GAME_OVER && analysis_cur_ && !guess_mode_) {
         hist_status_ = "ANALYSIS - MOVE " + std::to_string(analysis_cur_->depth);
         if (analysis_cur_->children.size() > 1)
             hist_status_ += " [FORK]";
+        status_cstr = hist_status_.c_str();
+    }
+    if (state_ == AppState::STONE_REMOVAL && !in_history) {
+        hist_status_ = status_cstr ? status_cstr : "";
+        if (!hist_status_.empty()) hist_status_ += "\n";
+        hist_status_ += stone_removal_fill_view_
+            ? GLYPH_PS_TRIANGLE "=SQUARE VIEW"
+            : GLYPH_PS_TRIANGLE "=FILL VIEW";
         status_cstr = hist_status_.c_str();
     }
     // Theme abbreviated shoulder/trigger/menu labels (L1, R3, OPT...) in the status
@@ -7165,8 +7615,13 @@ Renderer::DrawState App::make_ds() {
         .analysis               = nullptr,
         .analysis_mode          = false,
         .game_mode              = false,
-        .guess_mode             = false,
-        .guess_score            = 0,
+        .guess_mode             = guess_mode_,
+        .guess_score            = guess_score_,
+        .guess_count            = guess_count_,
+        .guess_last_points      = guess_last_points_,
+        .guess_last_dist        = guess_last_dist_,
+        .guess_heat_r           = guess_mode_ ? game_.cursor_r : -1,
+        .guess_heat_f           = guess_mode_ ? game_.cursor_f : -1,
         .chain_mode             = chain_mode_,
         // The quiz owns the whole screen: a bare board with no HUD, and its own
         // overlay panel drawn beside it.
@@ -7253,10 +7708,22 @@ Renderer::DrawState App::make_ds() {
         .live_black_in_byo      = playing && b_in_byo,
         .live_white_in_byo      = playing && w_in_byo,
         .live_status     = live ? status_cstr : nullptr,
-        .live_dead_stones     = (state_ == AppState::STONE_REMOVAL) ? game_.dead_stones : nullptr,
+        // The screensaver's end-of-game fill reuses the stone-removal fill view
+        // wholesale — same ownership map, same "dead stones count as the other
+        // side's territory" rule, so the final position of a catalog game reads
+        // exactly like the scored board of one of the user's own.
+        .live_dead_stones     = (state_ == AppState::STONE_REMOVAL) ? game_.dead_stones
+                              : (show_demo && demo_.fill_ready)     ? demo_.dead
+                              :                                       nullptr,
         .live_ownership       = (state_ == AppState::STONE_REMOVAL ||
                                   (state_ == AppState::PLAYING && show_live_ownership_))
-                                     ? game_.ownership : nullptr,
+                                                                    ? game_.ownership
+                              : (show_demo && demo_.fill_ready)     ? demo_.ownership
+                              :                                       nullptr,
+        .live_ownership_fill  = ((state_ == AppState::STONE_REMOVAL) && stone_removal_fill_view_) ||
+                                (show_demo && demo_.fill_ready),
+        .live_area_black      = (show_demo && demo_.fill_ready) ? demo_.area_black : -1,
+        .live_area_white      = (show_demo && demo_.fill_ready) ? demo_.area_white : -1,
         .live_suggestions     = (state_ == AppState::GAME_OVER && kata_suggestion_count_ > 0)
                                      ? kata_suggestions_ : nullptr,
         .live_suggestion_count = (state_ == AppState::GAME_OVER) ? kata_suggestion_count_ : 0,
@@ -7271,18 +7738,26 @@ Renderer::DrawState App::make_ds() {
         .live_kata_score_lead    = (state_ == AppState::GAME_OVER ||
                                      (state_ == AppState::PLAYING && show_live_ownership_))
                                         ? kata_score_lead_ : FLT_MAX,
+        // Both the yellow "actual move" marker and the tree panel show the answer
+        // to what's being guessed, so guess mode blanks them out same as it would
+        // for a player who shouldn't get to peek. The marker is additionally off
+        // unless SHOW NEXT MOVE is ticked — same spoiler, just always rather than
+        // only in guess mode.
         .live_actual_move_r = [&]() -> int {
-            if (state_ != AppState::GAME_OVER || !analysis_cur_ || analysis_cur_->children.empty())
+            if (state_ != AppState::GAME_OVER || guess_mode_ || !show_next_move_ ||
+                !analysis_cur_ || analysis_cur_->children.empty())
                 return -1;
             return analysis_cur_->children[0]->move_row;
         }(),
         .live_actual_move_f = [&]() -> int {
-            if (state_ != AppState::GAME_OVER || !analysis_cur_ || analysis_cur_->children.empty())
+            if (state_ != AppState::GAME_OVER || guess_mode_ || !show_next_move_ ||
+                !analysis_cur_ || analysis_cur_->children.empty())
                 return -1;
             return analysis_cur_->children[0]->move_col;
         }(),
         .live_actual_move_score = [&]() -> float {
-            if (state_ != AppState::GAME_OVER || !analysis_cur_ || analysis_cur_->children.empty())
+            if (state_ != AppState::GAME_OVER || guess_mode_ || !show_next_move_ ||
+                !analysis_cur_ || analysis_cur_->children.empty())
                 return FLT_MAX;
             int ar = analysis_cur_->children[0]->move_row;
             int af = analysis_cur_->children[0]->move_col;
@@ -7292,11 +7767,13 @@ Renderer::DrawState App::make_ds() {
                     return kata_suggestions_[i].score_lead;
             return FLT_MAX;
         }(),
-        .live_analysis_tree       = (state_ == AppState::GAME_OVER && !analysis_tree_render_.empty())
+        .live_analysis_tree       = (state_ == AppState::GAME_OVER && !guess_mode_ &&
+                                      !analysis_tree_render_.empty())
                                          ? analysis_tree_render_.data()
                                   : (state_ == AppState::PUZZLE_PLAY && !pz_tree_render_.empty())
                                          ? pz_tree_render_.data() : nullptr,
-        .live_analysis_tree_count = (state_ == AppState::GAME_OVER)   ? (int)analysis_tree_render_.size()
+        .live_analysis_tree_count = (state_ == AppState::GAME_OVER && !guess_mode_)
+                                         ? (int)analysis_tree_render_.size()
                                   : (state_ == AppState::PUZZLE_PLAY) ? (int)pz_tree_render_.size() : 0,
         .live_analysis_tree_cur_depth = (state_ == AppState::PUZZLE_PLAY) ? pz_cur_depth_
                                       : analysis_cur_ ? analysis_cur_->depth : 0,
@@ -7343,6 +7820,7 @@ Renderer::DrawState App::make_ds() {
                                !pz_banner_.empty())
                                   ? pz_banner_.c_str() : nullptr,
         .square_stones      = square_stones_,
+        .octagon_stones     = octagon_stones_,
         .square_grid        = square_grid_,
         // JOSEKI reuses the puzzle layout: comment box in the right gutter,
         // player labels and clocks suppressed
@@ -7353,6 +7831,8 @@ Renderer::DrawState App::make_ds() {
         .popup_count        = popup_active_ ? (int)popup_labels_.size() : 0,
         .popup_index        = popup_index_,
         .popup_title        = popup_active_ ? popup_title_.c_str() : nullptr,
+        .popup_styles       = (popup_active_ && !popup_styles_.empty())
+                                  ? popup_styles_.data() : nullptr,
         // Joseki continuation dots
         .live_markers       = (state_ == AppState::JOSEKI && !jk_markers_.empty())
                                   ? jk_markers_.data() : nullptr,
@@ -7583,6 +8063,42 @@ void App::event_loop() {
                                 draw();
                             }
                         }
+                        // End-of-game fill for the lobby screensaver — the answer to
+                        // demo_begin_end_fill()'s query. Stones the map hands to the
+                        // other side are marked dead so the fill replaces them too,
+                        // leaving a board covered edge to edge in the owners' colours.
+                        if (demo_active_ && demo_.end_phase && !demo_.fill_ready &&
+                            (state_ == AppState::LOBBY || state_ == AppState::SEARCHING ||
+                             state_ == AppState::CONNECTING)) {
+                            int kata_own[MAX_BOARD_SIZE][MAX_BOARD_SIZE];
+                            int bs = 0;
+                            if (kp->poll_ownership(kata_own, bs) && bs == demo_.board_size) {
+                                int area_b = 0, area_w = 0;
+                                for (int r = 0; r < bs; r++)
+                                    for (int f = 0; f < bs; f++) {
+                                        int ow = kata_own[r][f];
+                                        char cell = demo_.board.board[r][f];
+                                        demo_.ownership[r][f] = ow;
+                                        bool dead = (cell == 1 && ow < 0) ||
+                                                    (cell == 2 && ow > 0);
+                                        demo_.dead[r][f] = dead;
+                                        // Same rule the renderer's fill uses, so the
+                                        // count matches the stones actually drawn:
+                                        // a living stone keeps its colour, everything
+                                        // else becomes the owner's (or stays empty
+                                        // where KataGo calls the point neutral).
+                                        char filled = (cell != 0 && !dead) ? cell
+                                                    : (ow > 0) ? 1 : (ow < 0) ? 2 : 0;
+                                        if      (filled == 1) area_b++;
+                                        else if (filled == 2) area_w++;
+                                    }
+                                demo_.area_black = area_b;
+                                demo_.area_white = area_w;
+                                demo_.fill_ready = true;
+                                demo_.next_tick  = SDL_GetTicks() + DEMO_FILL_HOLD_MS;
+                                draw();
+                            }
+                        }
                         // Move suggestions / background scoring
                         {
                             int count = 0;
@@ -7760,6 +8276,10 @@ void App::event_loop() {
                     // "press A" duty it used to share with SPACE.
                     else if (k == SDLK_SPACE) {
                         toggle_draw_mode();
+                    }
+                    // G: guess-the-move quiz over the pro game open for review.
+                    else if (k == SDLK_g && e.key.repeat == 0) {
+                        toggle_guess_mode();
                     }
                     // SHIFT flips the chalk between white and black. Only while
                     // drawing, so it can't quietly change state you can't see, and
@@ -7963,7 +8483,7 @@ void App::event_loop() {
                                 match_menu_.focus_col = c;
                                 match_menu_.focus_row = r;
                                 int dcol = match_menu_.ingame ? 0 : (match_menu_.katago_mode ? -1 : 2);
-                                int zone = (c == dcol && r >= 6)
+                                int zone = (c == dcol && r >= 8)
                                                ? renderer_->match_menu_stepper_zone(
                                                      match_menu_, r, e.button.x, e.button.y)
                                                : -1;
@@ -8127,20 +8647,10 @@ void App::event_loop() {
                                         demo_.colors[demo_.pos]);
                 demo_.pos++;
                 demo_.next_tick = now + 1000;
-            } else if (demo_playlist_pos_ >= 0) {
-                // Scoped autoplay (started from the catalog): advance through the
-                // remembered list in order; after one full lap, fall back to the
-                // default random screensaver rather than looping forever.
-                demo_playlist_pos_++;
-                if (demo_playlist_pos_ < (int)demo_playlist_.size()) {
-                    load_demo_from_path(demo_playlist_[demo_playlist_pos_]);
-                } else {
-                    demo_playlist_.clear();
-                    demo_playlist_pos_ = -1;
-                    load_demo_game();
-                }
+            } else if (!demo_.end_phase) {
+                demo_begin_end_fill();  // ask KataGo who owns what, then hold on it
             } else {
-                load_demo_game();  // finished — pick a new random game
+                demo_next_game();       // hold over — on to the next game
             }
         }
 

@@ -127,6 +127,34 @@ constexpr SDL_Color LIBERTY_DOT     = {220, 50,  50,  200};  // liberty indicato
 constexpr SDL_Color BOX_SELECT      = {255, 255, 180, 200};  // box-selection highlight (matches ACCENT)
 
 // ---------------------------------------------------------------------------
+// Popup menu sections
+//
+// The lobby menu grew long enough that a flat list of a dozen commands is hard
+// to scan, so its rows are grouped under headings. Each section gets its own
+// hue: the heading wears it at full strength and its commands wear a muted
+// version, so a group reads as one block at a glance. The tints stay well
+// short of ACCENT's brightness on purpose — the highlighted row has to remain
+// the loudest thing on the panel no matter which section it sits in.
+
+constexpr SDL_Color MENU_PLAY       = {120, 195, 255, 255};  // start or resume a game
+constexpr SDL_Color MENU_TRAIN      = {140, 225, 155, 255};  // puzzles, quiz, joseki
+constexpr SDL_Color MENU_REVIEW     = {235, 190, 120, 255};  // saved games and analysis
+constexpr SDL_Color MENU_SETTINGS   = {200, 170, 235, 255};  // settings screens
+constexpr SDL_Color MENU_SCREEN     = {175, 175, 185, 255};  // drawing and quit
+
+// A section's command rows: the heading's hue pulled two thirds of the way back
+// to ordinary text, so the tint groups the rows without making any of them
+// compete with the selection.
+constexpr Uint8 mix_channel(Uint8 a, Uint8 b, int num, int den) {
+    return (Uint8)((a * num + b * (den - num)) / den);
+}
+constexpr SDL_Color menu_item_tint(SDL_Color s) {
+    return {mix_channel(s.r, TEXT_SECONDARY.r, 1, 3),
+            mix_channel(s.g, TEXT_SECONDARY.g, 1, 3),
+            mix_channel(s.b, TEXT_SECONDARY.b, 1, 3), 255};
+}
+
+// ---------------------------------------------------------------------------
 // Territory drill
 
 constexpr SDL_Color TERRITORY_BLACK = {100, 100, 100, 180};  // black territory shading

@@ -137,7 +137,7 @@ struct MatchPrefs {
     // No katago_mode flag: OGS and local settings are separate screens (MATCH
     // SETTINGS / KATAGO SETTINGS) and which game you start is chosen explicitly
     // in the popup, so there is no persistent "mode" to remember.
-    int  katago_str  = 7;   // index into strength table (0=20k … 6=5d, 7=adaptive)
+    int  katago_str  = 8;   // index into strength table (0=20k … 7=9d, 8=adaptive)
     // Board size for local play, kept apart from `sizes` above: that one is a
     // multi-select widening the OGS automatch pool, this is the single size one
     // local game is played on. Sharing them meant picking 9x9 for KataGo silently
