@@ -82,3 +82,11 @@ release/
 
 # Python bytecode cache
 __pycache__/
+
+# Local-only: goproblems.com download (bundled into releases by package_release.ps1)
+problem_sets/goproblemsSGF/
+
+# Reference recordings for the stone/capture sounds
+/removal.MP3
+/stones.MP3
+/stone sound reference.mp4
