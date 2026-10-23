@@ -1475,9 +1475,9 @@ void Renderer::draw_match_menu(const MatchMenu& menu) {
     static const char* str_labels[8]   = {
         "20 KYU", "15 KYU", "10 KYU", "5 KYU", "1 KYU", "1 DAN", "5 DAN", "9 DAN"
     };
-    static const char* display_labels[8] = {"SHOW COORDINATES", "ENGINE ANALYSIS", "CHAIN LINKS",
+    static const char* display_labels[9] = {"SHOW COORDINATES", "ENGINE ANALYSIS", "CHAIN LINKS",
                                             "SQUARE STONES", "OCTAGON STONES", "SQUARE GRID",
-                                            "SHOW TERRITORY", "SHOW NEXT MOVE"};
+                                            "SHOW TERRITORY", "SHOW NEXT MOVE", "TETRIS CAPTURES"};
 
     // Column headers all sit on the same line, one row above their column's first
     // control — col_ty already points past them (see match_menu_layout).
@@ -1558,6 +1558,7 @@ void Renderer::draw_match_menu(const MatchMenu& menu) {
         draw_check(display_col, 5, display_labels[5], menu.square_grid_sel);
         draw_check(display_col, 6, display_labels[6], menu.territory_sel, !menu.territory_available);
         draw_check(display_col, 7, display_labels[7], menu.next_move_sel);
+        draw_check(display_col, 8, display_labels[8], menu.tetris_sel);
 
         // Board colour: HUE/SAT/VAL as a bracketed number in the same slot draw_check
         // uses for [X]/[ ], followed by dedicated [-]/[+] buttons — a mouse-clickable
@@ -1584,14 +1585,14 @@ void Renderer::draw_match_menu(const MatchMenu& menu) {
             draw_text(px, y, scale, "[+]", focused ? Palette::ACCENT : Palette::TEXT_WHITE);
             stepper_bx = bx;
         };
-        draw_stepper(8,  "BOARD HUE", Palette::BOARD_HUE);
-        draw_stepper(9,  "BOARD SAT", Palette::BOARD_SAT);
-        draw_stepper(10, "BOARD VAL", Palette::BOARD_VAL);
+        draw_stepper(9,  "BOARD HUE", Palette::BOARD_HUE);
+        draw_stepper(10, "BOARD SAT", Palette::BOARD_SAT);
+        draw_stepper(11, "BOARD VAL", Palette::BOARD_VAL);
 
         int stepper_px = stepper_bx + text_width_px("[-]", scale) + scale * 3;   // [+] start, same formula as draw_stepper
         int swatch_x    = stepper_px + text_width_px("[+]", scale) + scale * 6;
-        int swatch_top  = col_ty[display_col] + 8 * line_h;
-        int swatch_size = 2 * line_h + th;   // spans row 8's top to row 10's text bottom
+        int swatch_top  = col_ty[display_col] + 9 * line_h;
+        int swatch_size = 2 * line_h + th;   // spans row 9's top to row 11's text bottom
         draw_color_swatch(swatch_x, swatch_top, swatch_size, Palette::BOARD, Palette::TEXT_DIM);
     }
 
@@ -1640,11 +1641,11 @@ void Renderer::draw_match_menu(const MatchMenu& menu) {
         int block_h  = (max_rows + 1) * line_h + line_gap * 2;  // +1 for column headers
         int cy_top   = sh - block_h - hpad / 2;
 
-        // Longest option column above is DISPLAY (header + 11 rows: 8 toggles plus
+        // Longest option column above is DISPLAY (header + 12 rows: 9 toggles plus
         // the board HUE/SAT/VAL steppers) — must track DISPLAY_ROWS in main.cpp's
         // match_menu_cols(). Skip the reference entirely rather than draw over it
         // when the window is too short.
-        int options_bottom = ty + (line_h + line_gap) + 11 * line_h + line_gap * 2;
+        int options_bottom = ty + (line_h + line_gap) + 12 * line_h + line_gap * 2;
         if (cy_top < options_bottom) { SDL_RenderPresent(sdl); return; }
 
         SDL_Color col_header = {160, 160, 160, 255};
@@ -1821,6 +1822,10 @@ void Renderer::draw_credential_screen(int step, const std::string& username,
     const char* leg = "CAPITAL LETTERS SHOWN IN ";
     draw_text(hpad, y, scale, leg, Palette::TEXT_DIM);
     draw_text(hpad + (int)strlen(leg) * 6 * scale, y, scale, "COLOR", Palette::ACCENT);
+
+    // Watching, reviewing and analysis don't need an account.
+    y += (th + gap) * 2;
+    draw_text(hpad, y, scale, "ESC: CONTINUE WITHOUT LOGGING IN", Palette::TEXT_DIM);
 
     if (footer && footer[0])
         draw_text(hpad, sh - hpad / 2 - th, scale, footer, Palette::TEXT_DIM);
@@ -2976,7 +2981,115 @@ void Renderer::draw_board(const DrawState& ds) {
     square_stones_  = ds.square_stones;   // read by shade_stone (also hashed for the cache)
     octagon_stones_ = ds.octagon_stones;  // ditto — and by draw_stone_circle, which sizes octagons
                                           // to the full cell so neighbours share an edge
+    update_capture_anim(ds);
     render_board(view, nullptr, ds);
+}
+
+// ---------------------------------------------------------------------------
+// Tetris capture animation — the Game Boy Tetris line clear: a finished row
+// blinks between its blocks and a flat light fill a few times, then drops out.
+// Here the "row" is whatever a capture just took off the board.
+
+namespace {
+// Timed in presented frames, not milliseconds, the way the original was: the
+// screen only changes on vsync, so a wall-clock step (80ms = 4.8 frames at 60Hz)
+// rounds to an uneven 5,5,5,4... frame rhythm. A whole number of frames per step
+// keeps every blink the same length.
+constexpr int CAPTURE_PHASE_MS = 80;  // target length of one blink half-cycle
+constexpr int CAPTURE_PHASES   = 7;   // flash, stone, flash, stone, flash, stone, flash — then gone
+}
+
+void Renderer::update_capture_anim(const DrawState& ds) {
+    // Territory drill and the Chinese fill view draw a board that isn't the game
+    // position; diffing across them would read as a burst of phantom moves. Drop
+    // the snapshot instead, so the first real frame afterwards just re-baselines.
+    if (ds.territory_board || ds.live_ownership_fill) {
+        anim_prev_n_ = 0;
+        capture_anim_.clear();
+        return;
+    }
+    const char (*board)[MAX_BOARD_SIZE] =
+        (ds.analysis_mode && ds.analysis) ? ds.analysis->board : ds.game.board;
+    int n = ds.active_board_size;
+
+    if (ds.tetris_captures && n == anim_prev_n_) {
+        // A capture reads as exactly one stone appearing and one or more stones of
+        // the other colour vanishing, nothing else. Stepping back through history,
+        // loading a different game or jumping several moves never fits that shape,
+        // so only a real capture (played, received, or replayed forward) blinks.
+        int placed = 0, placed_color = 0;
+        bool other_change = false;
+        std::vector<CapturedStone> gone;
+        for (int r = 0; r < n && !other_change; r++)
+            for (int f = 0; f < n; f++) {
+                char a = anim_prev_[r][f], b = board[r][f];
+                if (a == b) continue;
+                if (a == 0)      { placed++; placed_color = b; }
+                else if (b == 0) gone.push_back({r, f, a == 1});
+                else             { other_change = true; break; }
+            }
+        bool capture = !other_change && placed == 1 && !gone.empty();
+        for (const auto& g : gone)
+            if ((g.is_black ? 1 : 2) == placed_color) capture = false;
+        if (capture) {
+            capture_anim_       = std::move(gone);
+            capture_anim_frame_ = 0;
+            // Frames per step for this display's refresh rate (5 at 60Hz, 12 at
+            // 144Hz), so the blink runs at the same speed on any monitor.
+            int hz = 60;
+            SDL_DisplayMode mode;
+            SDL_Window* win = SDL_RenderGetWindow(sdl);
+            if (win && SDL_GetWindowDisplayMode(win, &mode) == 0 && mode.refresh_rate > 0)
+                hz = mode.refresh_rate;
+            capture_anim_fpp_ = std::max(1, (CAPTURE_PHASE_MS * hz + 500) / 1000);
+        }
+    }
+    if (!ds.tetris_captures) capture_anim_.clear();
+
+    for (int r = 0; r < n; r++)
+        memcpy(anim_prev_[r], board[r], (size_t)n);
+    anim_prev_n_ = n;
+}
+
+int Renderer::capture_anim_wait_ms() const {
+    // Frame-counted, so redraw every frame; the vsync'd present paces the loop.
+    return capture_anim_.empty() ? -1 : 0;
+}
+
+void Renderer::render_capture_anim(const BoardView& view, const DrawState& ds, bool visible) {
+    if (capture_anim_.empty()) return;
+    int phase = capture_anim_frame_ / capture_anim_fpp_;
+    if (phase >= CAPTURE_PHASES) { capture_anim_.clear(); return; }
+    // Counts every presented frame, shown or not, so a help/catalog overlay
+    // opened mid-blink doesn't leave it paused underneath.
+    if (!ds.suppress_present) capture_anim_frame_++;
+    if (!visible) return;
+    bool flash = phase % 2 == 0;
+
+    SDL_SetRenderDrawBlendMode(sdl, SDL_BLENDMODE_BLEND);
+    for (const auto& c : capture_anim_) {
+        if (ds.stone_filter == 1 && !c.is_black) continue;
+        if (ds.stone_filter == 2 &&  c.is_black) continue;
+        if (flash) {
+            // The stone's own silhouette, filled flat and unshaded — losing the
+            // shading is what makes white stones visibly blink too. Centre and
+            // radius mirror draw_stone_circle so the flash covers the stone exactly.
+            int cx     = view.offset_x + c.f * view.square + view.square / 2;
+            int cy     = view.offset_y + c.r * view.square + view.square / 2;
+            int radius = std::max(2, view.square / 2 - (octagon_stones_ ? 0 : 2));
+            SDL_SetRenderDrawColor(sdl, 250, 250, 236, 255);
+            if (octagon_stones_) {
+                fill_octagon(cx, cy, radius);
+            } else if (square_stones_) {
+                SDL_Rect body = {cx - radius, cy - radius, radius * 2 + 1, radius * 2 + 1};
+                SDL_RenderFillRect(sdl, &body);
+            } else {
+                fill_circle(cx, cy, radius);
+            }
+        } else {
+            draw_stone_circle(view, c.r, c.f, c.is_black, 255, /*shadow_pass=*/false);
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -3814,6 +3927,9 @@ void Renderer::render_board(const BoardView& view, const Overlay* overlay, const
     // Bullseye rings under the aiming point — below the cursor indicators drawn
     // further down, so the cursor always stays readable on top of them.
     if (board_on_screen) render_guess_heatmap(view, ds);
+
+    // Captured stones blinking out — over the stones, under every marker/cursor.
+    render_capture_anim(view, ds, board_on_screen);
 
     // Colored point markers (joseki continuation dots) — filled circle with a
     // dark rim so every category color reads against the board background

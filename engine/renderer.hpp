@@ -5,6 +5,7 @@
 #include "catalog.hpp"
 #include <cfloat>
 #include <string>
+#include <vector>
 
 // Face-button glyphs: draw_text() renders these placeholder characters as the
 // connected controller's button symbols (see font_glyphs / face-button rendering
@@ -261,6 +262,12 @@ public:
         // stone/marker/cursor already renders at the same point-centre pixel
         // regardless of this flag, so nothing else needs to know about it.
         bool              square_grid = false;
+        // Tetris capture mode: stones removed by a capture blink a few times and
+        // vanish, like a completed line in the early Tetris games (settings menu
+        // DISPLAY toggle). The renderer spots captures itself by diffing the
+        // board between frames, so no caller has to report them; the animation is
+        // drawn over the cached board and never touches the cache.
+        bool              tetris_captures = false;
         // OGS puzzle solving: solution tree occupies the left panel (via the
         // live_analysis_tree fields), so the comment box moves to the RIGHT
         // gutter and the player labels/clocks are suppressed.
@@ -303,6 +310,7 @@ public:
         bool territory_sel      = false; // mirrors App::show_live_ownership_ (live territory overlay)
         bool territory_available = true; // false = no KataGo process running — greyed out, inert
         bool next_move_sel   = false; // mirrors App::show_next_move_ (yellow actual-move ring in review)
+        bool tetris_sel      = false; // mirrors App::tetris_captures_ (blink-and-vanish capture animation)
         bool ingame       = false; // opened mid-game — hide search/mode controls, board
                                    // size/speed shown read-only for reference only
     };
@@ -342,7 +350,7 @@ public:
     bool match_menu_cell_at(const MatchMenu& menu, int mx, int my,
                             int& col, int& row) const;
 
-    // Which part of a BOARD HUE/SAT/VAL row (DISPLAY column, rows 8-10) a screen
+    // Which part of a BOARD HUE/SAT/VAL row (DISPLAY column, rows 9-11) a screen
     // point falls in: -1 = not on either button, 0 = [-], 1 = [+]. `row` must
     // already be known to be one of those three (see match_menu_hit) — this
     // only computes button geometry, it doesn't validate the row itself.
@@ -392,6 +400,10 @@ public:
     void board_to_screen(const BoardView& view, int br, int bf, int& x, int& y) const;
 
     void draw_board(const DrawState& ds);
+    // While a Tetris capture animation is playing: how long an event loop that
+    // sleeps between inputs may wait before redrawing — 0, since the animation
+    // advances one step per presented frame. -1 = nothing animating.
+    int  capture_anim_wait_ms() const;
     // Public: also used standalone by ogs_client's drill-list preview
     void render_mini_board(int x, int y, int size, const char board[][BOARD_SIZE], int board_size = BOARD_SIZE);
 
@@ -564,6 +576,18 @@ private:
     int          cache_w_     = 0;
     int          cache_h_     = 0;
     uint64_t     cache_hash_  = ~0ULL;   // initialised so first frame always rebuilds
+
+    // Tetris capture animation (DrawState::tetris_captures). anim_prev_ is the
+    // board as of the previous draw_board; a diff against it that reads as exactly
+    // one move-with-capture starts the blink for the stones that went missing.
+    struct CapturedStone { int r, f, is_black; };
+    char         anim_prev_[MAX_BOARD_SIZE][MAX_BOARD_SIZE] = {};
+    int          anim_prev_n_       = 0;       // 0 = no snapshot yet
+    std::vector<CapturedStone> capture_anim_;  // empty = idle
+    int          capture_anim_frame_ = 0;      // frames presented since the capture
+    int          capture_anim_fpp_   = 5;      // frames per blink step, from refresh rate
+    void         update_capture_anim(const DrawState& ds);
+    void         render_capture_anim(const BoardView& view, const DrawState& ds, bool visible);
 
     static const char* format_result_message(const char* sgf_result);
 

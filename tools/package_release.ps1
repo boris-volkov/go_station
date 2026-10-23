@@ -42,6 +42,14 @@ Get-ChildItem -Path (Join-Path $dist "games") -Recurse -Force |
     Where-Object { $_.Name -eq ".go_viewer_index" } |
     Remove-Item -Force
 
+# goproblems.com download, if present and indexed (tools/goproblems_index.py)
+$gpDir = Join-Path $root "problem_sets\goproblemsSGF"
+if (Test-Path (Join-Path $gpDir "goproblems_index.tsv")) {
+    New-Item -ItemType Directory -Force (Join-Path $dist "problem_sets") | Out-Null
+    Copy-Item -Recurse $gpDir (Join-Path $dist "problem_sets\goproblemsSGF")
+    Write-Host "Included goproblems set from $gpDir"
+}
+
 $zipPath = Join-Path $root ("dist\ogs_client_{0}.zip" -f (Get-Date -Format "yyyyMMdd"))
 if (Test-Path $zipPath) { Remove-Item -Force $zipPath }
 Compress-Archive -Path (Join-Path $dist "*") -DestinationPath $zipPath

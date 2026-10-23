@@ -77,6 +77,34 @@ bool ogs_fetch_puzzle(int puzzle_id, OgsPuzzle& out);
 bool ogs_fetch_collection_puzzles(int puzzle_id,
                                   std::vector<std::pair<int, std::string>>& out);
 
+// ── goproblems.com download (local files, no network) ────────────────────────
+//
+// A folder of <id>.sgf files from goproblems.com, each carrying its rank in
+// DI[] and genre in GE[]. tools/goproblems_index.py writes the folder's
+// goproblems_index.tsv (easiest first), which the app browses; each problem's
+// SGF is only parsed when it's opened.
+//
+// goproblems ids share the app's puzzle-id space (solved_puzzles.txt, saved
+// missed/favorite copies) offset by GP_ID_BASE, clear of real OGS ids and of
+// the imported books at 1e9 + slot * 1e6. Every goproblems solve is mapped to
+// the one synthetic GP_COLLECTION_ID, so the browser pin shows overall progress.
+constexpr int GP_ID_BASE       = 2000000000;
+constexpr int GP_COLLECTION_ID = 1999999999;
+
+struct GpIndexEntry {
+    int         gp_id = 0;
+    int         level = 0;     // same scale as OgsPuzzle::rank: 29 = 1k, 30 = 1d
+    std::string genre;
+};
+
+// Load the index (already sorted easiest-first by the builder). False if the
+// file is missing or holds no rows.
+bool gp_load_index(const std::string& path, std::vector<GpIndexEntry>& out);
+
+// Load problem gp_id from its SGF at path (out.id = GP_ID_BASE + gp_id). On
+// failure err says why — unreadable, or an SGF the solver can't use.
+bool gp_load_problem(const std::string& path, int gp_id, OgsPuzzle& out, std::string& err);
+
 // ── OGS Joseki Explorer ("OJE") — https://online-go.com/oje/ ─────────────────
 //
 // A public position graph walked one node at a time: fetch a node, get its

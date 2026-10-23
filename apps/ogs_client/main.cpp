@@ -594,9 +594,9 @@ private:
     // mode. The single authority on which controls exist — pad navigation and mouse
     // hit-testing both validate against this, so neither can invent a row.
     void match_menu_cols(int out_sizes[3], int& col_count) const {
-        const int DISPLAY_ROWS = 11; // SHOW COORDINATES, ENGINE ANALYSIS, CHAIN LINKS,
+        const int DISPLAY_ROWS = 12; // SHOW COORDINATES, ENGINE ANALYSIS, CHAIN LINKS,
                                      // SQUARE STONES, OCTAGON STONES, SQUARE GRID,
-                                     // SHOW TERRITORY, SHOW NEXT MOVE,
+                                     // SHOW TERRITORY, SHOW NEXT MOVE, TETRIS CAPTURES,
                                      // BOARD HUE, BOARD SAT, BOARD VAL
         out_sizes[0] = out_sizes[1] = out_sizes[2] = 0;
         if (match_menu_.ingame) {
@@ -631,9 +631,9 @@ private:
     // plain-click-raises fallback — the one place that knows which DISPLAY row
     // maps to which Palette setter, so those three input paths can't drift apart.
     void adjust_board_hsv(int row, int delta) {
-        if      (row ==  8) Palette::set_board_hue(Palette::BOARD_HUE + delta);
-        else if (row ==  9) Palette::set_board_sat(Palette::BOARD_SAT + delta);
-        else if (row == 10) Palette::set_board_val(Palette::BOARD_VAL + delta);
+        if      (row ==  9) Palette::set_board_hue(Palette::BOARD_HUE + delta);
+        else if (row == 10) Palette::set_board_sat(Palette::BOARD_SAT + delta);
+        else if (row == 11) Palette::set_board_val(Palette::BOARD_VAL + delta);
     }
 
     // Move the catalog selection, keep it scrolled into view, and refresh the
@@ -667,6 +667,12 @@ private:
     int         cred_step_ = 0;  // 0=off, 1=username, 2=password
     std::string cred_username_, cred_password_, cred_buf_;
     bool        cred_from_prompt_ = false;  // set on submit; save creds once AUTH_OK confirms them
+    // Skipped the login (ESC at the prompt): no network thread is running, so the
+    // lobby hides everything that needs an OGS account and offers LOG IN instead.
+    // Review, analysis, puzzles and joseki only need public data or local files.
+    bool        offline_ = false;
+    void continue_offline();
+    void return_to_login();
 
     // Status line (changes with state)
     std::string status_;
@@ -763,6 +769,9 @@ private:
     // Points sit at the centre of a checkerboard cell instead of a line crossing
     // (DISPLAY toggle, off by default) — see renderer.cpp's render_board_content.
     bool square_grid_      = false;
+    // Captured stones blink a few times and vanish, early-Tetris line-clear style
+    // (DISPLAY toggle, off by default) — see renderer.cpp's update_capture_anim.
+    bool tetris_captures_  = false;
     // Yellow ring on the move actually played next, during GAME_OVER review
     // (DISPLAY toggle, off by default) — working out the next move yourself is
     // most of the point of the review screen, and the ring hands you the answer
@@ -954,6 +963,7 @@ private:
         int  total = 0;
         OgsPuzzle puzzle;
         std::vector<std::pair<int, std::string>> siblings;
+        std::string err;   // goproblems: why the problem couldn't be used
     };
     std::shared_ptr<PuzzleFetch> pz_fetch_;
     bool pz_loading_ = false;
@@ -992,6 +1002,13 @@ private:
             if (kv.second > 0) counts[kv.second]++;
         return counts;
     }
+    // Index in pz_list_ of the furthest-down solved puzzle (0 if none) — where a
+    // freshly opened collection parks the cursor so each visit resumes there.
+    int pz_last_solved_index() const {
+        for (int i = (int)pz_list_.size() - 1; i >= 0; i--)
+            if (pz_solved_ids_.count(pz_list_[i].first)) return i;
+        return 0;
+    }
     // Every collection ever opened, persisted to puzzle_collections.txt — the
     // metadata source for the pinned MY SETS section, which must be able to show
     // (and reopen) in-progress collections that live on OGS pages not currently
@@ -1003,6 +1020,26 @@ private:
     // sets (name order) first, then the current server page minus duplicates.
     std::vector<OgsPuzzleCollection> pz_display_cols_;
     void pz_rebuild_display();
+
+    // goproblems.com download (problem_sets/<folder> holding goproblems_index.tsv),
+    // browsed easiest-first from that index. The list is an ordinary PUZZLES view
+    // — pz_list_ ids are GP_ID_BASE-offset, which pz_launch_fetch routes to the
+    // local SGF — parallel to gp_index_ so LEFT/RIGHT can jump between rank
+    // levels. Its pin row carries sentinel id -4.
+    std::string gp_dir_;            // found by scan_local_books(), "" = none
+    std::vector<GpIndexEntry> gp_index_;
+    std::string gp_index_dir_;      // folder gp_index_ was loaded from
+    bool gp_list_open() const {
+        return pz_view_ == PzView::PUZZLES && local_pz_kind_ == LocalPzKind::NONE &&
+               pz_open_col_id_ == GP_COLLECTION_ID;
+    }
+    void open_gp_list();
+    // R3/L3 through goproblems can land on a problem the solver can't use (no
+    // RIGHT line, unplayable moves): the failed fetch then steps on past it, in
+    // the same direction, a few times before giving up.
+    int pz_step_dir_    = 0;    // direction of the in-flight step, 0 = not a step
+    int pz_step_target_ = -1;   // pz_list_ index that step is fetching
+    int pz_step_skips_  = 0;
 
     OgsPuzzle             pz_;                 // puzzle being solved
     const PuzzleMoveNode* pz_node_  = nullptr; // current position in the solution tree
@@ -1260,6 +1297,9 @@ private:
 
     // RT held state — while held during live play, reveals the last-played stone
     bool rt_down_ = false;
+    // Right mouse button held on a board — the mouse mirror of RT above. Kept
+    // separate so releasing one doesn't hide the marker the other is holding up.
+    bool rclick_down_ = false;
 
     bool init();
     void cleanup();
@@ -1267,7 +1307,8 @@ private:
     void handle_controller_button(Uint8 button);
     void handle_net_msg(const NetMsg& msg);
     // forced_color: -1 = use current turn (normal), 0/1 = force that color and don't flip turn
-    void apply_move(int col, int row, int forced_color = -1);
+    int  apply_move(int col, int row, int forced_color = -1);  // returns stones captured
+    void play_move_sound(bool mine, int captured);
     void apply_pass();  // flips turn and records a history snapshot, same bookkeeping as apply_move
     void request_resync();  // debounced game/connect — GAME_CONNECTED rebuilds the position
     void reset_byo_countdowns(bool running_player_too);  // stored secs -> full period (byo players)
@@ -1383,19 +1424,21 @@ void App::cleanup() {
 
 // ── Board management ──────────────────────────────────────────────────────────
 
-void App::apply_move(int col, int row, int forced_color) {
-    if (col < 0 || row < 0) return;  // pass — board unchanged
+int App::apply_move(int col, int row, int forced_color) {
+    if (col < 0 || row < 0) return 0;  // pass — board unchanged
     last_move_r_ = row;
     last_move_f_ = col;
     int is_black = (forced_color >= 0) ? forced_color : (int)game_.board.turn_is_black;
+    const int prisoners_before = game_.board.black_prisoners + game_.board.white_prisoners;
     game_.board.place_stone(row, col, is_black);
+    const int captured = game_.board.black_prisoners + game_.board.white_prisoners - prisoners_before;
     game_.board.save_snapshot();
     if (forced_color >= 0) {
         game_.history.push_back(game_.board);
         if (move_scores_.size() < game_.history.size()) {
             move_scores_.push_back(FLT_MAX); move_marked_.push_back(false); marked_paths_.push_back("");
         }
-        return;  // pre-placed handicap stone: caller sets turn after
+        return 0;  // pre-placed handicap stone: caller sets turn after
     }
     // Free handicap: first `handicap` stones are all black; after last one, white plays
     if (game_.free_handicap && game_.board.stone_count <= game_.handicap) {
@@ -1407,6 +1450,14 @@ void App::apply_move(int col, int row, int forced_color) {
     if (move_scores_.size() < game_.history.size()) {
         move_scores_.push_back(FLT_MAX); move_marked_.push_back(false); marked_paths_.push_back("");
     }
+    return captured;
+}
+
+// The placing clack, then — if the move took anything — the captured stones
+// clattering into the bowl (queued, so it follows the clack).
+void App::play_move_sound(bool mine, int captured) {
+    sound_.play_stone(mine);
+    if (captured > 0) sound_.play_capture(captured);
 }
 
 // A pass has no stone to place, but still needs its own history snapshot with the same
@@ -1908,8 +1959,12 @@ void App::start_catalog_autoplay(int start_at_catalog_index) {
 static bool jk_parse_placement(const std::string& p, int bs, int& r, int& f);
 
 void App::handle_controller_button(Uint8 btn) {
-    // Credential prompt: not controller-driven (keyboard only for now)
-    if (state_ == AppState::CREDENTIAL_PROMPT) return;
+    // Credential prompt: typing needs a keyboard, but a pad can still skip the login
+    if (state_ == AppState::CREDENTIAL_PROMPT) {
+        if (btn == SDL_CONTROLLER_BUTTON_START || btn == SDL_CONTROLLER_BUTTON_B)
+            continue_offline();
+        return;
+    }
 
     // Catalog overlay: intercept all input while open
     if (catalog_.active) {
@@ -2240,7 +2295,10 @@ void App::handle_controller_button(Uint8 btn) {
             // Finding a match queues a real opponent immediately, so a single press
             // was too easy to trigger by accident — double-press confirm, same
             // idiom as resign/pass/mark. START -> FIND MATCH also still works.
-            if (!find_match_confirm_) {
+            if (offline_) {
+                flash_       = "NOT LOGGED IN — LOG IN TO OGS FROM THE MENU";
+                flash_until_ = SDL_GetTicks() + 2500;
+            } else if (!find_match_confirm_) {
                 find_match_confirm_ = true;
                 flash_       = "PRESS " GLYPH_PS_CROSS " AGAIN TO SEARCH FOR MATCH";
                 flash_until_ = SDL_GetTicks() + 2500;
@@ -2309,7 +2367,7 @@ void App::handle_controller_button(Uint8 btn) {
         // BOARD HUE/SAT/VAL rows below — a no-op anywhere else in the menu.
         case SDL_CONTROLLER_BUTTON_LEFTSHOULDER:
         case SDL_CONTROLLER_BUTTON_RIGHTSHOULDER: {
-            if (match_menu_.focus_col != display_col || match_menu_.focus_row < 8) break;
+            if (match_menu_.focus_col != display_col || match_menu_.focus_row < 9) break;
             int delta = (btn == SDL_CONTROLLER_BUTTON_RIGHTSHOULDER) ? 5 : -5;
             adjust_board_hsv(match_menu_.focus_row, delta);
             renderer_->draw_match_menu(match_menu_);
@@ -2370,8 +2428,11 @@ void App::handle_controller_button(Uint8 btn) {
                 } else if (r == 7) {
                     match_menu_.next_move_sel = !match_menu_.next_move_sel;
                     show_next_move_           = match_menu_.next_move_sel;
+                } else if (r == 8) {
+                    match_menu_.tetris_sel = !match_menu_.tetris_sel;
+                    tetris_captures_       = match_menu_.tetris_sel;
                 } else {
-                    adjust_board_hsv(r, 5);   // rows 8-10; the [-]/[+] buttons handle their own click before reaching here
+                    adjust_board_hsv(r, 5);   // rows 9-11; the [-]/[+] buttons handle their own click before reaching here
                 }
             } else if (match_menu_.focus_col == 0) {
                 if (match_menu_.katago_mode) {
@@ -2453,7 +2514,7 @@ void App::handle_controller_button(Uint8 btn) {
                 }
             }
             if (is_local_game_) {
-                apply_move(game_.cursor_f, game_.cursor_r);
+                play_move_sound(/*mine=*/true, apply_move(game_.cursor_f, game_.cursor_r));
                 local_prev_was_pass_ = false;
                 game_.my_turn = false;
                 kata_gtp_.send_play(game_.my_color, game_.cursor_r, game_.cursor_f,
@@ -2463,7 +2524,7 @@ void App::handle_controller_button(Uint8 btn) {
             } else {
                 net_.cmd_send_move(game_.game_id, game_.cursor_f, game_.cursor_r);
                 // Apply optimistically so stone appears immediately; server echo skipped
-                apply_move(game_.cursor_f, game_.cursor_r);
+                play_move_sound(/*mine=*/true, apply_move(game_.cursor_f, game_.cursor_r));
                 game_.pending_col = game_.cursor_f;
                 game_.pending_row = game_.cursor_r;
                 game_.my_turn = false;
@@ -2759,16 +2820,21 @@ void App::open_popup_menu() {
         // Two separate items rather than one that changes meaning: which kind of
         // game you start is chosen here, explicitly, and never depends on what a
         // settings screen was last showing.
-        add("FIND MATCH", [this]() {
-            net_.cmd_find_match(match_prefs_);
-            state_ = AppState::SEARCHING;
-            set_status("SEARCHING...");
-        });
+        if (!offline_)
+            add("FIND MATCH", [this]() {
+                net_.cmd_find_match(match_prefs_);
+                state_ = AppState::SEARCHING;
+                set_status("SEARCHING...");
+            });
         if (!kata_human_model_.empty())
             add("PLAY VS KATAGO", [this]() { start_local_game(); });
-        add("MY GAMES (CORRESPONDENCE)", [this]() { open_corr_list(); });
-        add("CHALLENGES",               [this]() { open_challenges(); });
-        add("CREATE CHALLENGE",         [this]() { open_challenge_create(); });
+        if (offline_) {
+            add("LOG IN TO OGS", [this]() { return_to_login(); });
+        } else {
+            add("MY GAMES (CORRESPONDENCE)", [this]() { open_corr_list(); });
+            add("CHALLENGES",               [this]() { open_challenges(); });
+            add("CREATE CHALLENGE",         [this]() { open_challenge_create(); });
+        }
 
         section("TRAIN", Palette::MENU_TRAIN);
         add("PUZZLES",         [this]() { open_puzzle_browser(); });
@@ -3408,6 +3474,7 @@ static std::string set_meta(const std::string& path, const char* key) {
 // (id 0) and shows under its folder name.
 void App::scan_local_books() {
     local_books_.clear();
+    gp_dir_.clear();
     std::string root = problem_sets_root();
     if (!is_dir(root)) return;
 
@@ -3442,6 +3509,12 @@ void App::scan_local_books() {
     for (const std::string& name : names) {
         LocalBook b;
         b.dir = Catalog::join_path(root, name);
+        // The goproblems download isn't a book: it gets its own pin, ordered by
+        // its index — and listing its ~13,000 files on every visit would drag.
+        if (path_exists(Catalog::join_path(b.dir, "goproblems_index.tsv"))) {
+            if (gp_dir_.empty()) gp_dir_ = b.dir;
+            continue;
+        }
         std::vector<std::string> files;
         if (!Catalog::list_sgf_files(b.dir, files) || files.empty()) continue;
         b.name          = set_meta(Catalog::join_path(b.dir, "set.txt"), "name");
@@ -4353,7 +4426,7 @@ void App::handle_katago_gtp_move(int row, int col) {
         return;
     }
     // Normal move
-    apply_move(col, row);
+    play_move_sound(/*mine=*/false, apply_move(col, row));
     local_prev_was_pass_ = false;
     pass_confirm_        = false;
     game_.my_turn        = true;
@@ -4426,6 +4499,7 @@ void App::load_settings() {
         else if (k == "square_grid")   square_grid_            = val != 0;
         else if (k == "show_territory") show_live_ownership_   = val != 0;
         else if (k == "show_next_move") show_next_move_        = val != 0;
+        else if (k == "tetris_captures") tetris_captures_      = val != 0;
         else if (k == "board_hue")     Palette::set_board_hue(val);
         else if (k == "board_sat")     Palette::set_board_sat(val);
         else if (k == "board_val")     Palette::set_board_val(val);
@@ -4455,6 +4529,7 @@ void App::save_settings() {
     fprintf(f, "square_grid %d\n",   square_grid_             ? 1 : 0);
     fprintf(f, "show_territory %d\n", show_live_ownership_    ? 1 : 0);
     fprintf(f, "show_next_move %d\n", show_next_move_         ? 1 : 0);
+    fprintf(f, "tetris_captures %d\n", tetris_captures_       ? 1 : 0);
     fprintf(f, "board_hue %d\n",     Palette::BOARD_HUE);
     fprintf(f, "board_sat %d\n",     Palette::BOARD_SAT);
     fprintf(f, "board_val %d\n",     Palette::BOARD_VAL);
@@ -4696,6 +4771,7 @@ void App::open_settings_menu() {
     match_menu_.territory_sel       = show_live_ownership_;
     match_menu_.territory_available = kata_.running() || kata_9_.running();
     match_menu_.next_move_sel   = show_next_move_;
+    match_menu_.tetris_sel      = tetris_captures_;
     state_ = AppState::MATCH_MENU;
     renderer_->draw_match_menu(match_menu_);
 }
@@ -4901,6 +4977,25 @@ void App::pz_rebuild_display() {
     // routing pin id; the real collection id (for progress colouring) is
     // looked back up through local_books_ — see draw_puzzle_browser.
     scan_local_books();
+
+    // goproblems download — indexed once per folder (tools/goproblems_index.py)
+    if (gp_dir_ != gp_index_dir_) {
+        gp_index_dir_ = gp_dir_;
+        gp_index_.clear();
+        if (!gp_dir_.empty())
+            gp_load_index(Catalog::join_path(gp_dir_, "goproblems_index.tsv"), gp_index_);
+    }
+    if (!gp_index_.empty()) {
+        OgsPuzzleCollection c;
+        c.id           = -4;
+        c.name         = "[GOPROBLEMS.COM — EASIEST FIRST]";
+        c.owner        = "GOPROBLEMS.COM";
+        c.puzzle_count = (int)gp_index_.size();
+        c.min_rank     = std::max(1, gp_index_.front().level);   // 0 (30k) reads as "?"
+        c.max_rank     = gp_index_.back().level;
+        local_pins.push_back(c);
+    }
+
     for (const auto& b : local_books_)
         add_local_pin(b.pin_id, ("[" + b.name + "]").c_str(), b.dir);
     pz_display_cols_.insert(pz_display_cols_.begin(), local_pins.begin(), local_pins.end());
@@ -4968,7 +5063,9 @@ void App::open_local_pz_list(LocalPzKind kind) {
     local_pz_kind_   = kind;
     pz_view_         = PzView::PUZZLES;
     pz_list_title_   = title;
-    pz_index_        = 0;
+    // Books have real solved tracking — resume at the last solved problem.
+    // Personal sets carry sentinel ids, so they stay at the top.
+    pz_index_        = (kind == LocalPzKind::BOOK) ? pz_last_solved_index() : 0;
     pz_open_col_id_  = (kind == LocalPzKind::BOOK) ? local_book_.collection_id : 0;
     drill_thumb_idx_ = -1;   // file list may have changed — recompute the preview
     draw();
@@ -5558,6 +5655,29 @@ void App::draw_credential_prompt() {
     renderer_->draw_credential_screen(cred_step_, cred_username_, cred_buf_, footer.c_str());
 }
 
+// Skip the login and use the app without an OGS account. Same lobby entry as
+// AUTH_OK, minus the network: the socket never opens, so nothing will arrive.
+void App::continue_offline() {
+    offline_   = true;
+    cred_step_ = 0;
+    cred_username_.clear();
+    cred_password_.clear();
+    cred_buf_.clear();
+    state_ = AppState::LOBBY;
+    set_status("");
+    load_demo_game();
+    draw();
+}
+
+// LOG IN TO OGS from the offline lobby: back to the prompt, which ESC leaves again.
+void App::return_to_login() {
+    offline_   = false;
+    state_     = AppState::CREDENTIAL_PROMPT;
+    cred_step_ = 1;
+    cred_buf_.clear();
+    draw();
+}
+
 // ── "Who won?" quiz ───────────────────────────────────────────────────────────
 
 // Can this game be a quiz question? Two kinds qualify. A counted game (numeric
@@ -5999,17 +6119,46 @@ void App::open_puzzle_browser() {
         draw();                              // reuse the cached page
 }
 
+// Enter the goproblems list: every indexed problem, easiest first, cursor on
+// the first one not yet solved so each visit resumes where the last left off.
+void App::open_gp_list() {
+    local_pz_kind_ = LocalPzKind::NONE;
+    drill_paths_.clear();
+    pz_list_.clear();
+    pz_list_.reserve(gp_index_.size());
+    int first_open = -1;
+    for (const auto& e : gp_index_) {
+        std::string genre = e.genre;
+        for (char& ch : genre) ch = (char)toupper((unsigned char)ch);
+        int id = GP_ID_BASE + e.gp_id;
+        pz_list_.push_back({id, ogs_rank_str(std::max(1, e.level)) + "  " + genre
+                                    + "  (" + std::to_string(e.gp_id) + ")"});
+        if (first_open < 0 && !pz_solved_ids_.count(id)) first_open = (int)pz_list_.size() - 1;
+    }
+    pz_list_title_  = "GOPROBLEMS.COM";
+    pz_open_col_id_ = GP_COLLECTION_ID;
+    pz_view_        = PzView::PUZZLES;
+    pz_index_       = std::max(0, first_open);
+    draw();
+}
+
 void App::pz_launch_fetch(int kind, int arg) {
     if (pz_loading_) return;
     pz_loading_ = true;
     auto res  = std::make_shared<PuzzleFetch>();
     pz_fetch_ = res;
     int page_size = PZ_PAGE_SIZE;
-    std::thread([res, kind, arg, page_size] {
+    // goproblems ids load from the local download instead of the network
+    std::string gp_path = (kind == 2 && arg >= GP_ID_BASE)
+        ? Catalog::join_path(gp_dir_, std::to_string(arg - GP_ID_BASE) + ".sgf") : "";
+    std::thread([res, kind, arg, page_size, gp_path] {
         switch (kind) {
         case 1: res->ok = ogs_fetch_puzzle_collections(arg, page_size,
                                                        res->collections, res->total); break;
-        case 2: res->ok = ogs_fetch_puzzle(arg, res->puzzle);            break;
+        case 2: res->ok = !gp_path.empty()
+                              ? gp_load_problem(gp_path, arg - GP_ID_BASE, res->puzzle, res->err)
+                              : ogs_fetch_puzzle(arg, res->puzzle);
+                break;
         case 3: res->ok = ogs_fetch_collection_puzzles(arg, res->siblings); break;
         }
         res->kind = kind;
@@ -6029,11 +6178,23 @@ void App::poll_puzzle_fetch() {
     // User may have left for another state while the fetch was in flight
     if (state_ != AppState::PUZZLE_BROWSE && state_ != AppState::PUZZLE_PLAY) return;
     if (!res->ok) {
-        flash_       = "OGS FETCH FAILED";
+        // A goproblems problem the solver can't use — while stepping, skip on
+        // past it (bounded) rather than stalling on the same one every press
+        if (res->kind == 2 && !res->err.empty() && pz_step_dir_ != 0 && pz_step_target_ >= 0 && pz_step_skips_ < 5) {
+            pz_list_pos_ = pz_step_target_;
+            pz_step_skips_++;
+            pz_step(pz_step_dir_);
+            return;
+        }
+        pz_step_dir_   = 0;
+        pz_step_skips_ = 0;
+        flash_       = res->err.empty() ? "OGS FETCH FAILED" : "GOPROBLEMS: " + res->err;
         flash_until_ = SDL_GetTicks() + 2500;
         draw();
         return;
     }
+    pz_step_dir_   = 0;
+    pz_step_skips_ = 0;
     switch (res->kind) {
     case 1:
         pz_collections_ = std::move(res->collections);
@@ -6055,7 +6216,7 @@ void App::poll_puzzle_fetch() {
     case 3:
         pz_list_  = std::move(res->siblings);
         pz_view_  = PzView::PUZZLES;
-        pz_index_ = 0;
+        pz_index_ = pz_last_solved_index();
         // Backfill collection ids for solves recorded before the mapping existed,
         // so old progress starts coloring the collections list too.
         if (pz_open_col_id_ > 0) {
@@ -6467,6 +6628,8 @@ void App::pz_step(int dir) {
         local_pz_load_and_start(next);   // local files — no network fetch
         return;
     }
+    pz_step_dir_    = dir;
+    pz_step_target_ = next;
     pz_launch_fetch(2, pz_list_[next].first);
 }
 
@@ -6500,7 +6663,7 @@ void App::draw_puzzle_browser() {
             // Book pins list under a routing sentinel, but their problems are
             // solved-tracked under the real collection id the importer stamped
             // in — resolve through local_books_ so they colour like any other.
-            int col_id = c.id;
+            int col_id = (c.id == -4) ? GP_COLLECTION_ID : c.id;
             if (c.id <= -10)
                 for (const auto& b : local_books_)
                     if (b.pin_id == c.id) { col_id = b.collection_id; break; }
@@ -6565,7 +6728,9 @@ void App::draw_puzzle_browser() {
             lines.push_back((solved ? "[X] " : "[ ] ") + p.second);
             colors.push_back(solved ? PZ_DONE : PZ_NO_COLOR);
         }
-        footer = GLYPH_PS_CROSS " SOLVE   " GLYPH_PS_CIRCLE " COLLECTIONS";
+        footer = gp_list_open()
+                     ? GLYPH_PS_CROSS " SOLVE   LEFT/RIGHT: RANK   " GLYPH_PS_CIRCLE " COLLECTIONS"
+                     : GLYPH_PS_CROSS " SOLVE   " GLYPH_PS_CIRCLE " COLLECTIONS";
     }
     if (pz_loading_) {
         lines.push_back("LOADING...");
@@ -6618,16 +6783,38 @@ void App::handle_puzzle_button(Uint8 btn) {
             if (pz_index_ + 1 < total) { pz_index_++; draw(); }
             break;
         case SDL_CONTROLLER_BUTTON_DPAD_LEFT:
+        case SDL_CONTROLLER_BUTTON_DPAD_RIGHT:
+            // goproblems list: jump to the first problem of the previous/next rank
+            if (gp_list_open() && pz_list_.size() == gp_index_.size() && total > 0) {
+                int dir = (btn == SDL_CONTROLLER_BUTTON_DPAD_RIGHT) ? 1 : -1;
+                int i   = std::max(0, std::min(total - 1, pz_index_));
+                int lv  = gp_index_[i].level;
+                if (dir > 0) {
+                    while (i < total && gp_index_[i].level == lv) i++;
+                    if (i >= total) break;
+                } else {
+                    // start of this level; if already there, start of the one before
+                    while (i > 0 && gp_index_[i - 1].level == lv) i--;
+                    if (i == pz_index_ && i > 0) {
+                        lv = gp_index_[--i].level;
+                        while (i > 0 && gp_index_[i - 1].level == lv) i--;
+                    }
+                }
+                pz_index_ = i;
+                draw();
+                break;
+            }
+            if (btn == SDL_CONTROLLER_BUTTON_DPAD_RIGHT) {
+                if (pz_view_ == PzView::COLLECTIONS && !pz_loading_ &&
+                    pz_col_page_ * PZ_PAGE_SIZE < pz_col_total_) {
+                    pz_col_page_++;
+                    pz_index_ = 0;
+                    pz_launch_fetch(1, pz_col_page_);
+                }
+                break;
+            }
             if (pz_view_ == PzView::COLLECTIONS && pz_col_page_ > 1 && !pz_loading_) {
                 pz_col_page_--;
-                pz_index_ = 0;
-                pz_launch_fetch(1, pz_col_page_);
-            }
-            break;
-        case SDL_CONTROLLER_BUTTON_DPAD_RIGHT:
-            if (pz_view_ == PzView::COLLECTIONS && !pz_loading_ &&
-                pz_col_page_ * PZ_PAGE_SIZE < pz_col_total_) {
-                pz_col_page_++;
                 pz_index_ = 0;
                 pz_launch_fetch(1, pz_col_page_);
             }
@@ -6645,6 +6832,7 @@ void App::handle_puzzle_button(Uint8 btn) {
                         open_local_pz_list(LocalPzKind::BOOK);
                         break;
                     }
+                    if (c.id == -4) { open_gp_list(); break; }
                     LocalPzKind kind = c.id == -1 ? LocalPzKind::DRILLS
                                      : c.id == -2 ? LocalPzKind::MISSED
                                                   : LocalPzKind::FAVORITES;
@@ -6665,6 +6853,7 @@ void App::handle_puzzle_button(Uint8 btn) {
             } else if (local_pz_kind_ != LocalPzKind::NONE) {
                 local_pz_load_and_start(pz_index_);
             } else {
+                pz_step_dir_ = 0;   // picked by hand — a bad problem just reports
                 pz_launch_fetch(2, pz_list_[pz_index_].first);
             }
             break;
@@ -7262,7 +7451,7 @@ void App::handle_net_msg(const NetMsg& msg) {
                 if (msg.move_number > 0)
                     game_.board.turn_is_black = move_is_black(msg.move_number) ? 1 : 0;
                 if (msg.col >= 0) {
-                    apply_move(msg.col, msg.row);
+                    play_move_sound(/*mine=*/false, apply_move(msg.col, msg.row));
                 } else {
                     apply_pass();
                     flash_       = "OPPONENT PASSED";
@@ -7783,10 +7972,11 @@ Renderer::DrawState App::make_ds() {
                                      ? move_scores_.data() : nullptr,
         .live_score_graph_len = (state_ == AppState::GAME_OVER) ? (int)move_scores_.size() : 0,
         .live_score_graph_cur = analysis_cur_ ? analysis_cur_->depth : 0,
-        // Last-played-stone indicator: only shown while RT is held (previously always-on
-        // row/column lines were too distracting; now an opt-in teal circle on demand).
+        // Last-played-stone indicator: only shown while RT (or the right mouse button) is
+        // held (previously always-on row/column lines were too distracting; now an opt-in
+        // teal circle on demand).
         .live_last_move_r = [&]() -> int {
-            if (!rt_down_) return -1;
+            if (!rt_down_ && !rclick_down_) return -1;
             if (state_ == AppState::GAME_OVER && analysis_cur_ && analysis_cur_->parent)
                 return analysis_cur_->move_row;
             if ((state_ == AppState::PLAYING || state_ == AppState::STONE_REMOVAL)
@@ -7795,7 +7985,7 @@ Renderer::DrawState App::make_ds() {
             return -1;
         }(),
         .live_last_move_f = [&]() -> int {
-            if (!rt_down_) return -1;
+            if (!rt_down_ && !rclick_down_) return -1;
             if (state_ == AppState::GAME_OVER && analysis_cur_ && analysis_cur_->parent)
                 return analysis_cur_->move_col;
             if ((state_ == AppState::PLAYING || state_ == AppState::STONE_REMOVAL)
@@ -7822,6 +8012,7 @@ Renderer::DrawState App::make_ds() {
         .square_stones      = square_stones_,
         .octagon_stones     = octagon_stones_,
         .square_grid        = square_grid_,
+        .tetris_captures    = tetris_captures_,
         // JOSEKI reuses the puzzle layout: comment box in the right gutter,
         // player labels and clocks suppressed
         .puzzle_mode        = (state_ == AppState::PUZZLE_PLAY ||
@@ -7947,6 +8138,10 @@ void App::event_loop() {
             wait_ms = std::min(wait_ms, (int)(repeat_next_ms - now));
         if (demo_active_ && demo_.next_tick > now)
             wait_ms = std::min(wait_ms, (int)(demo_.next_tick - now));
+        // Tetris capture blink: redraw every frame while it plays (the draw() at
+        // the bottom of the loop paints it; vsync paces the loop)
+        if (int anim_ms = renderer_->capture_anim_wait_ms(); anim_ms >= 0)
+            wait_ms = std::min(wait_ms, anim_ms);
         // Wake up in time for the joystick cursor's next repeat step (same states
         // as the js_cursor_ok gate below)
         if ((state_ == AppState::PLAYING || state_ == AppState::GAME_OVER ||
@@ -8222,7 +8417,9 @@ void App::event_loop() {
                 } else if (e.type == SDL_KEYDOWN) {
                     SDL_Keycode k = e.key.keysym.sym;
 
-                    if (state_ == AppState::CREDENTIAL_PROMPT) {
+                    if (state_ == AppState::CREDENTIAL_PROMPT && k == SDLK_ESCAPE) {
+                        continue_offline();
+                    } else if (state_ == AppState::CREDENTIAL_PROMPT) {
                         if (handle_cred_key(k, cred_step_, cred_buf_,
                                             cred_username_, cred_password_)) {
                             // Both credentials entered — start connecting. Mark them
@@ -8409,6 +8606,10 @@ void App::event_loop() {
 
                 } else if (e.type == SDL_MOUSEBUTTONUP) {
                     if (e.button.button == SDL_BUTTON_LEFT) pen_down_ = false;
+                    else if (e.button.button == SDL_BUTTON_RIGHT && rclick_down_) {
+                        rclick_down_ = false;
+                        draw();
+                    }
 
                 } else if (e.type == SDL_MOUSEBUTTONDOWN) {
                     // Pen down in drawing mode starts a stroke and stamps a dot, so a
@@ -8483,7 +8684,7 @@ void App::event_loop() {
                                 match_menu_.focus_col = c;
                                 match_menu_.focus_row = r;
                                 int dcol = match_menu_.ingame ? 0 : (match_menu_.katago_mode ? -1 : 2);
-                                int zone = (c == dcol && r >= 8)
+                                int zone = (c == dcol && r >= 9)
                                                ? renderer_->match_menu_stepper_zone(
                                                      match_menu_, r, e.button.x, e.button.y)
                                                : -1;
@@ -8551,10 +8752,17 @@ void App::event_loop() {
                         // "open the puzzle browser", which is why right-clicking
                         // kept launching puzzles; mid-game it armed a pass.
                         // On the screens whose own hint reads "=CLOSE" it backs
-                        // out; everywhere else it opens the context menu, which
+                        // out. On a game board, holding it shows the last-played
+                        // stone (like holding RT) — ESC opens the menu there.
+                        // Everywhere else it opens the context menu, which
                         // already lists PUZZLES, CATALOG, SETTINGS and the rest.
                         if (catalog_.active || state_ == AppState::MATCH_MENU) {
                             handle_controller_button(SDL_CONTROLLER_BUTTON_B);
+                        } else if (state_ == AppState::PLAYING ||
+                                   state_ == AppState::STONE_REMOVAL ||
+                                   state_ == AppState::GAME_OVER) {
+                            rclick_down_ = true;
+                            draw();
                         } else if (state_ != AppState::CREDENTIAL_PROMPT &&
                                    state_ != AppState::CONNECTING) {
                             open_popup_menu();
