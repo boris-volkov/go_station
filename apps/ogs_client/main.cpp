@@ -1305,6 +1305,9 @@ private:
     void cleanup();
     void event_loop();
     void handle_controller_button(Uint8 button);
+    // Re-theme the on-screen hints to whichever input was used last (a pad's
+    // glyphs, or the keyboard mirror keys). Redraws only when the style changes.
+    void use_input_style(PadStyle s);
     void handle_net_msg(const NetMsg& msg);
     // forced_color: -1 = use current turn (normal), 0/1 = force that color and don't flip turn
     int  apply_move(int col, int row, int forced_color = -1);  // returns stones captured
@@ -1352,9 +1355,10 @@ private:
 // Map a connected controller's SDL type to the on-screen hint glyph style. Only a
 // positively identified Xbox or Switch Pro pad switches away from the PlayStation
 // default (also used for PS pads and anything SDL can't identify), so an
-// unrecognized controller never shows confidently-wrong labels.
+// unrecognized controller never shows confidently-wrong labels. No pad at all
+// means the keyboard mirrors are the only way in, so hints show those keys.
 static PadStyle detect_pad_style(SDL_GameController* pad) {
-    if (!pad) return PadStyle::PlayStation;
+    if (!pad) return PadStyle::Keyboard;
     switch (SDL_GameControllerGetType(pad)) {
     case SDL_CONTROLLER_TYPE_XBOX360:
     case SDL_CONTROLLER_TYPE_XBOXONE:             return PadStyle::Xbox;
@@ -1406,6 +1410,12 @@ bool App::init() {
     Renderer::set_pad_style(detect_pad_style(pad_));
 
     return true;
+}
+
+void App::use_input_style(PadStyle s) {
+    if (Renderer::pad_style() == s) return;
+    Renderer::set_pad_style(s);
+    draw();
 }
 
 void App::cleanup() {
@@ -5555,7 +5565,10 @@ void App::draw_corr_list() {
     static const SDL_Color WAIT_COL = {190, 190, 190, 255};  // waiting on opponent, grey
 
     for (const auto& g : corr_games_) {
-        std::string row = g.my_move ? GLYPH_PS_CROSS " " : "  ";
+        // Your-move marker. Keyboard style would expand the glyph to "ENTER" and
+        // push those rows out of line with the waiting ones, so use a plain star.
+        const char* marker = (Renderer::pad_style() == PadStyle::Keyboard) ? "* " : GLYPH_PS_CROSS " ";
+        std::string row = g.my_move ? marker : "  ";
         row += g.opp;
         row += "   " + std::to_string(g.board_size) + "x" + std::to_string(g.board_size);
         row += g.my_move ? "   YOUR MOVE" : "   WAITING";
@@ -8351,6 +8364,7 @@ void App::event_loop() {
 
                 } else if (e.type == SDL_CONTROLLERBUTTONDOWN) {
                     Uint8 btn = e.cbutton.button;
+                    use_input_style(detect_pad_style(pad_));
                     handle_controller_button(btn);
                     // Start key-repeat tracking for dpad buttons
                     for (Uint8 db : DPAD_BTNS) {
@@ -8372,6 +8386,7 @@ void App::event_loop() {
                         if (pressed == down) return;
                         down = pressed;
                         if (pressed) {
+                            use_input_style(detect_pad_style(pad_));
                             handle_controller_button(vbtn);
                             repeat_btn     = vbtn;
                             repeat_next_ms = SDL_GetTicks() + REPEAT_DELAY;
@@ -8416,6 +8431,7 @@ void App::event_loop() {
 
                 } else if (e.type == SDL_KEYDOWN) {
                     SDL_Keycode k = e.key.keysym.sym;
+                    use_input_style(PadStyle::Keyboard);
 
                     if (state_ == AppState::CREDENTIAL_PROMPT && k == SDLK_ESCAPE) {
                         continue_offline();

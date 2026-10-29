@@ -1,6 +1,7 @@
 #include "renderer.hpp"
 #include "palette.hpp"
 #include <algorithm>
+#include <cctype>
 #include <cfloat>
 #include <cmath>
 #include <cstdio>
@@ -168,12 +169,18 @@ bool Renderer::screen_to_board(const BoardView& view, int mx, int my, int& r, in
 // ---------------------------------------------------------------------------
 // Primitive drawing
 
+// Keyboard style: the key that mirrors each face-button placeholder (see the
+// SDL_KEYDOWN mirror table in ogs_client's main loop). nullptr for any other
+// char, or when a pad style is active.
+static const char* keyboard_face_key(char c);
+
 int Renderer::text_width_px(const char* text, int scale) const {
     int count = 0;
     for (const char* p = text; *p; count++) {
         int bytes;
-        utf8_display_char(p, bytes);
+        char c = utf8_display_char(p, bytes);
         p += bytes;
+        if (const char* key = keyboard_face_key(c)) count += (int)strlen(key) - 1;
     }
     if (count <= 0) return 0;
     return (count * 6 - 1) * scale;
@@ -186,6 +193,17 @@ static PadStyle g_pad_style = PadStyle::PlayStation;
 
 void     Renderer::set_pad_style(PadStyle s) { g_pad_style = s; }
 PadStyle Renderer::pad_style()               { return g_pad_style; }
+
+static const char* keyboard_face_key(char c) {
+    if (g_pad_style != PadStyle::Keyboard) return nullptr;
+    switch (c) {
+    case '~': return "ENTER";
+    case '@': return "B";
+    case '#': return "C";
+    case '^': return "M";
+    default:  return nullptr;
+    }
+}
 
 // The four face-button placeholder chars (~ @ # ^) encode SDL's positional layout
 // (bottom / right / left / top). Resolve one to the glyph bitmap + color for the
@@ -234,9 +252,15 @@ static bool face_button_glyph(char c, const unsigned char*& rows, SDL_Color& col
         color = SDL_Color{225, 225, 225, 255};
         return true;
     }
+    case PadStyle::Keyboard:
+        return false;  // multi-char key names; draw_text expands via keyboard_face_key
     }
     return false;
 }
+
+// Key-cap tint for keyboard-style face keys: the same neutral light tone as the
+// Nintendo symbols, so "ENTER" stands out from the dim hint text around it.
+static const SDL_Color KEYBOARD_KEY_COLOR = {225, 225, 225, 255};
 
 // Abbreviated shoulder/trigger/menu/stick labels used in hint strings, themed to
 // the current pad style. Face-button glyphs (~ @ # ^) are left untouched — draw_text
@@ -247,6 +271,34 @@ std::string Renderer::themed_labels(const char* tmpl) {
     if (g_pad_style == PadStyle::PlayStation) return s;  // source tokens are PS labels
 
     struct Sub { const char* from; const char* to; };
+    if (g_pad_style == PadStyle::Keyboard) {
+        // Whole-word matches only: keyboard names are short punctuation, so a
+        // stray hit inside a word ("OPTIMAL", a coordinate like "L10") would be
+        // far more confusing than LB/RB. Pairs come first so "L1/R1" reads as
+        // "[ ]" like the help overlay's keyboard column, not "[/]".
+        static const Sub kb[] = {
+            {"L1/R1", "[ ]"}, {"L2/R2", ", ."}, {"L3/R3", "PGUP/PGDN"},
+            {"R2 HOLD", ""},  // trigger-only; no key mirror
+            {"L1", "["}, {"R1", "]"}, {"L2", ","}, {"R2", "."},
+            {"L3", "PGUP"}, {"R3", "PGDN"}, {"TRIGGERS", ", ."},
+            {"D-PAD/STICK", "ARROWS"}, {"D-PAD", "ARROWS"}, {"DPAD", "ARROWS"},
+            {"OPTIONS", "ESC"}, {"OPT", "ESC"}, {"SHARE", "S"},
+        };
+        auto word_char = [](char ch) { return isalnum((unsigned char)ch) != 0; };
+        for (const Sub& sub : kb) {
+            const std::string from = sub.from, to = sub.to;
+            size_t pos = 0;
+            while ((pos = s.find(from, pos)) != std::string::npos) {
+                size_t end = pos + from.size();
+                bool bounded = (pos == 0 || !word_char(s[pos - 1])) &&
+                               (end >= s.size() || !word_char(s[end]));
+                if (!bounded) { pos = end; continue; }
+                s.replace(pos, from.size(), to);
+                pos += to.size();
+            }
+        }
+        return s;
+    }
     static const Sub xbox[] = {
         {"L1", "LB"}, {"R1", "RB"}, {"L2", "LT"}, {"R2", "RT"},
         {"L3", "LS"}, {"R3", "RS"}, {"SHARE", "VIEW"}, {"OPT", "MENU"},
@@ -275,6 +327,12 @@ void Renderer::draw_text(int x, int y, int scale, const char* text, SDL_Color co
         int bytes;
         char c = utf8_display_char(p, bytes);
         p += bytes;
+        if (const char* key = keyboard_face_key(c)) {
+            draw_text(pen_x, y, scale, key, KEYBOARD_KEY_COLOR);
+            SDL_SetRenderDrawColor(sdl, color.r, color.g, color.b, color.a);
+            pen_x += (int)strlen(key) * 6 * scale;
+            continue;
+        }
         const unsigned char* rows;
         SDL_Color fc;
         bool face = face_button_glyph(c, rows, fc);
@@ -1213,22 +1271,31 @@ void Renderer::render_help_overlay(const BoardView& view, bool show_help, bool l
         int th       = 7 * scale;
         int col_gap  = 6 * scale;
 
-        // Pad column labels (L1, OPT...) theme to the connected controller.
+        // Pad column labels (L1, OPT...) theme to the connected controller. With
+        // keyboard style the pad column would just repeat the keyboard one, so
+        // it is dropped, along with pad-only rows (R2 HOLD).
+        bool kb_only = (g_pad_style == PadStyle::Keyboard);
+        auto skip_row = [&](int i) {
+            return kb_only && rows[i].pad && rows[i].pad[0] && !rows[i].kb[0];
+        };
         int pad_w = 0, kb_w = 0;
         for (int i = 0; i < n; i++) {
             if (!rows[i].pad) continue;
-            if (rows[i].pad[0]) pad_w = std::max(pad_w, text_width_px(themed_labels(rows[i].pad).c_str(), scale));
+            if (rows[i].pad[0] && !kb_only) pad_w = std::max(pad_w, text_width_px(themed_labels(rows[i].pad).c_str(), scale));
             if (rows[i].kb[0])  kb_w  = std::max(kb_w,  text_width_px(rows[i].kb,  scale));
         }
-        int desc_x = pad_w + col_gap + kb_w + col_gap;
-        int max_w  = 0;
+        int kb_x   = kb_only ? 0 : pad_w + col_gap;
+        int desc_x = kb_x + kb_w + col_gap;
+        int max_w  = 0, shown = 0;
         for (int i = 0; i < n; i++) {
+            if (skip_row(i)) continue;
+            shown++;
             int w = !rows[i].pad ? text_width_px(rows[i].desc, scale)
                                  : desc_x + text_width_px(rows[i].desc, scale);
             max_w = std::max(max_w, w);
         }
 
-        int total_h = n * th + (n - 1) * line_gap;
+        int total_h = shown * th + (shown - 1) * line_gap;
         int pad     = (scale >= 3) ? 12 : 8;
         int bw = max_w + pad * 2;
         int bh = total_h + pad * 2;
@@ -1248,16 +1315,17 @@ void Renderer::render_help_overlay(const BoardView& view, bool show_help, bool l
 
         int ty = y + pad;
         for (int i = 0; i < n; i++) {
+            if (skip_row(i)) continue;
             if (!rows[i].pad) {
                 SDL_Color hc = (i == 0) ? col_title : col_header;
                 draw_text(x + pad, ty, scale, rows[i].desc, hc);
             } else {
                 // Caption rows (empty desc) draw their key columns in gray
                 SDL_Color kc = rows[i].desc[0] ? col_key : col_header;
-                if (rows[i].pad[0])
+                if (rows[i].pad[0] && !kb_only)
                     draw_text(x + pad, ty, scale, themed_labels(rows[i].pad).c_str(), kc);
                 if (rows[i].kb[0])
-                    draw_text(x + pad + pad_w + col_gap, ty, scale, rows[i].kb, kc);
+                    draw_text(x + pad + kb_x, ty, scale, rows[i].kb, kc);
                 if (rows[i].desc[0])
                     draw_text(x + pad + desc_x, ty, scale, rows[i].desc, col_desc);
             }
@@ -1460,12 +1528,11 @@ void Renderer::draw_match_menu(const MatchMenu& menu) {
     // Hint line (PlayStation button glyphs — Boris plays on a DualShock). The old
     // L1 mode toggle is gone: OGS and KataGo settings are separate screens off the
     // popup menu now, so there is no hidden hotkey to advertise.
-    if (menu.ingame)
-        draw_text(hpad, ty, scale, GLYPH_PS_CROSS "=TOGGLE   L1/R1=ADJUST   DPAD=NAVIGATE   " GLYPH_PS_CIRCLE "=CLOSE", Palette::TEXT_DIM);
-    else if (menu.katago_mode)
-        draw_text(hpad, ty, scale, GLYPH_PS_CROSS "=SELECT   DPAD=NAVIGATE   OPT=CLOSE", Palette::TEXT_DIM);
-    else
-        draw_text(hpad, ty, scale, GLYPH_PS_CROSS "=TOGGLE   L1/R1=ADJUST   DPAD=NAVIGATE   OPT=CLOSE", Palette::TEXT_DIM);
+    const char* menu_hint =
+        menu.ingame      ? GLYPH_PS_CROSS "=TOGGLE   L1/R1=ADJUST   DPAD=NAVIGATE   " GLYPH_PS_CIRCLE "=CLOSE"
+      : menu.katago_mode ? GLYPH_PS_CROSS "=SELECT   DPAD=NAVIGATE   OPT=CLOSE"
+                         : GLYPH_PS_CROSS "=TOGGLE   L1/R1=ADJUST   DPAD=NAVIGATE   OPT=CLOSE";
+    draw_text(hpad, ty, scale, themed_labels(menu_hint).c_str(), Palette::TEXT_DIM);
     ty += th + line_gap * 4;
 
     int col_ty[3] = {L.col_ty[0], L.col_ty[1], L.col_ty[2]};
@@ -1657,9 +1724,13 @@ void Renderer::draw_match_menu(const MatchMenu& menu) {
             // Align descriptions within the column to its widest key
             int key_w = 0;
             for (int r = 0; r < cols[c].n; r++)
-                key_w = std::max(key_w, text_width_px(cols[c].rows[r].key, scale));
+                key_w = std::max(key_w, text_width_px(themed_labels(cols[c].rows[r].key).c_str(), scale));
             for (int r = 0; r < cols[c].n; r++) {
-                draw_text(cx, cy, scale, cols[c].rows[r].key, Palette::ACCENT);
+                // A row whose key themes to nothing (R2 HOLD on keyboard) has no
+                // binding in this input scheme — drop it rather than show a blank.
+                std::string key = themed_labels(cols[c].rows[r].key);
+                if (key.empty()) continue;
+                draw_text(cx, cy, scale, key.c_str(), Palette::ACCENT);
                 draw_text(cx + key_w + scale * 6, cy, scale, cols[c].rows[r].desc, Palette::TEXT_DIM);
                 cy += line_h;
             }
@@ -1730,7 +1801,7 @@ void Renderer::draw_list_screen(const char* title, const std::vector<std::string
     }
 
     if (footer && footer[0])
-        draw_text(L.hpad, sh - L.hpad / 2 - L.text_h, L.scale, footer, Palette::TEXT_DIM);
+        draw_text(L.hpad, sh - L.hpad / 2 - L.text_h, L.scale, themed_labels(footer).c_str(), Palette::TEXT_DIM);
 
     if (present)
         SDL_RenderPresent(sdl);
@@ -1828,7 +1899,7 @@ void Renderer::draw_credential_screen(int step, const std::string& username,
     draw_text(hpad, y, scale, "ESC: CONTINUE WITHOUT LOGGING IN", Palette::TEXT_DIM);
 
     if (footer && footer[0])
-        draw_text(hpad, sh - hpad / 2 - th, scale, footer, Palette::TEXT_DIM);
+        draw_text(hpad, sh - hpad / 2 - th, scale, themed_labels(footer).c_str(), Palette::TEXT_DIM);
 
     SDL_RenderPresent(sdl);
 }

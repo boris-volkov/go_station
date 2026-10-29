@@ -26,7 +26,10 @@
 
 // Which controller's button symbols/labels the hints render as. Set from the
 // connected pad's SDL type (see Renderer::set_pad_style); defaults to PlayStation.
-enum class PadStyle { PlayStation, Xbox, Nintendo };
+// Keyboard is used when no pad is connected or the keyboard was the last input:
+// face glyphs render as their mirrored key names (ENTER, B, C, M) and the
+// shoulder/menu labels as keys ([ ], ", .", ESC...).
+enum class PadStyle { PlayStation, Xbox, Nintendo, Keyboard };
 
 // A letter mark ("A", "B", …) placed on a board point during analysis.
 struct BoardLabel { int r = 0; int f = 0; char ch = 'A'; };
