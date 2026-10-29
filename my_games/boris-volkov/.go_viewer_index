@@ -1,4 +1,4 @@
-go_viewer_index_v2	142
+go_viewer_index_v2	198
 2026.09.05 02.40 boris volkov vs vignesh kalidas.sgf	boris volkov	vignesh kalidas	2026.09.05		17K	15K
 20260628-boris-volkov-AG_Park.sgf	boris-volkov	AG Park	2026-06-28	B+R	22k	17k
 20260628-boris-volkov-Acetone.sgf	boris-volkov	Acetone	2026-06-28	W+16.5	21k	20k
@@ -55,6 +55,24 @@ go_viewer_index_v2	142
 20260811-boris-volkov-ra1n_Yyy.sgf	boris-volkov	ra1n_Yyy	2026-08-11	W+4.5	17k	17k
 20260906-boris-volkov-GornostayAV.sgf	GornostayAV	boris-volkov	2026-09-07	W+R	17k	17k
 20260919-boris-volkov-XYZplayer.sgf	boris-volkov	XYZplayer	2026-09-20	B+R	16k	15k
+20260921-boris-volkov-Nguyn_Vn_Mt.sgf	boris-volkov	Nguyễn Văn Mít	2026-09-21	W+R	16k	12k
+20261001-boris-volkov-Migol2.sgf	Migol2	boris-volkov	2026-10-01	B+R	15k	16k
+20261014-boris-volkov-AIbatros.sgf	boris-volkov	AIbatros	2026-10-14	W+R	15k	13k
+20261014-boris-volkov-Haronnorah.sgf	boris-volkov	Haronnorah	2026-10-14	W+R	15k	13k
+20261014-boris-volkov-dougd1.sgf	dougd1	boris-volkov	2026-10-14	B+R	14k	15k
+20261016-boris-volkov-sirhc.sgf	sirhc	boris-volkov	2026-10-16	?	15k	16k
+20261018-boris-volkov-Endergame.sgf	boris-volkov	Endergame	2026-10-19	B+2.5	15k	13k
+20261018-boris-volkov-chrillechrille.sgf	boris-volkov	chrillechrille	2026-10-19	B+R	15k	12k
+20261018-boris-volkov-djanatyn.sgf	djanatyn	boris-volkov	2026-10-18	W+11.5	16k	15k
+20261018-boris-volkov-kapau.sgf	boris-volkov	kapau	2026-10-19	B+R	15k	11k
+20261018-boris-volkov-sxshiliu.sgf	boris-volkov	sxshiliu	2026-10-19	W+R	15k	6k
+20261027-boris-volkov-Laralike.sgf	boris-volkov	Laralike	2026-10-27	B+R	15k	14k
+20261028-boris-volkov-Cattoz.sgf	boris-volkov	Cattoz	2026-10-28	W+R	14k	11k
+20261028-boris-volkov-G0DzUMA.sgf	G0DzUMA	boris-volkov	2026-10-29	W+R	14k	14k
+20261028-boris-volkov-Nova1.sgf	Nova1	boris-volkov	2026-10-29	B+17.5	14k	14k
+20261028-boris-volkov-benfr2.sgf	boris-volkov	ben.fr2	2026-10-28	B+10.5	14k	9k
+20261028-boris-volkov-bubussnn88.sgf	bubussnn88	boris-volkov	2026-10-28	B+R	14k	14k
+20261028-boris-volkov-owen7441.sgf	boris-volkov	owen7441	2026-10-28	W+R	14k	10k
 88401355-219-???-boris-volkov.sgf						
 89200849-259-boris-volkov-phillydude.sgf	phillydude	boris-volkov	2026-07-28	B+23.5	19k	17k
 89201216-089-thejordan-boris-volkov.sgf	boris-volkov	thejordan	2026-07-28	W+R	18k	18k
@@ -70,9 +88,24 @@ go_viewer_index_v2	142
 [V196531681]vs[boris33]1785958917030026542.sgf	V196531681	boris33	2026-08-06	W+R	12级	12级
 [boris33]vs[???]1783332260030060908.sgf						
 [boris33]vs[???]1789183030030060014.sgf						
-drills\KILL_RECT6_IN_CORNER_-_NO_OUTSIDE_LIBERTIES.sgf			2026-07-11			
+drills\KILL_BULKY_FIVE_IN_THE_CORNER.sgf			2026-09-22			
+drills\KILL_RECTANGULAR_SIX_IN_THE_CORNER.sgf			2026-09-22			
+drills\KILL_THE_L+1_GROUP_(LEG_ON_THE_LONG_SIDE).sgf			2026-09-22			
+drills\KILL_THE_L+1_GROUP_(LEG_ON_THE_SHORT_SIDE).sgf			2026-09-22			
 drills\KILL_THE_L-GROUP.sgf			2026-08-30			
+drills\KILL_THE_WEAK_CARPENTERS_SQUARE.sgf			2026-09-22			
+drills\LIVE_IN_BENT_FOUR_IN_THE_CORNER.sgf			2026-09-22			
+drills\LIVE_IN_BULKY_FIVE_IN_THE_CORNER.sgf			2026-09-22			
+drills\LIVE_IN_RECTANGULAR_SIX_IN_THE_CORNER.sgf			2026-09-22			
+drills\LIVE_IN_THE_CARPENTERS_SQUARE.sgf			2026-09-22			
+drills\LIVE_IN_THE_L+1_GROUP_(LEG_ON_THE_LONG_SIDE).sgf			2026-09-22			
+drills\LIVE_IN_THE_L+1_GROUP_(LEG_ON_THE_SHORT_SIDE).sgf			2026-09-22			
+drills\LIVE_IN_THE_LONG_L-GROUP.sgf			2026-09-22			
+drills\LIVE_IN_THE_STRAIGHT_J-GROUP.sgf			2026-09-22			
+drills\LIVE_IN_TWISTED_FOUR_IN_THE_CORNER.sgf			2026-09-22			
+drills\LIVE_IN_WEAK_RECTANGULAR_SIX_IN_THE_CORNER.sgf			2026-09-22			
 drills\SAVE_L2_GROUP.sgf			2026-08-30			
+drills\SAVE_THE_L+2_GROUP.sgf			2026-09-22			
 favorite_puzzles\puzzle-2886.sgf			2026-07-12			
 katago\20260705-125831-boris-volkov-ADAPTIVE_10_KYU.sgf	boris-volkov	ADAPTIVE (10 KYU)	2026-07-05	W+R		
 katago\20260705-130415-boris-volkov-ADAPTIVE_11_KYU.sgf	boris-volkov	ADAPTIVE (11 KYU)	2026-07-05	W+R		
@@ -105,9 +138,20 @@ katago\20260822-011322-boris-volkov-9_DAN.sgf	9 DAN	boris-volkov	2026-08-22	B+R
 katago\20260822-011608-boris-volkov-9_DAN.sgf	9 DAN	boris-volkov	2026-08-22	B+R		
 katago\20260822-012025-boris-volkov-9_DAN.sgf	boris-volkov	9 DAN	2026-08-22	W+R		
 katago\20260822-012856-boris-volkov-9_DAN.sgf	boris-volkov	9 DAN	2026-08-22	W+R		
+katago\20260923-233046-boris-volkov-9_DAN.sgf	boris-volkov	9 DAN	2026-09-23	W+R		
+katago\20261018-173029-boris-volkov-9_DAN.sgf	9 DAN	boris-volkov	2026-10-18	B+R		
+katago\20261027-115826-boris-volkov-ADAPTIVE_13_KYU.sgf	ADAPTIVE (13 KYU)	boris-volkov	2026-10-27	B+R		
 marked\20260704-boris-volkov-move94.sgf	boris-volkov	ForeLL	2026-07-04			
 marked\20260705-mrdermis-move162.sgf	boris-volkov	mrdermis	2026-07-05			
 marked\20260706-boris-volkov-move121.sgf	boris-volkov	mrdermis	2026-07-06			
+missed_puzzles\puzzle-2000000235.sgf			2026-09-23			
+missed_puzzles\puzzle-2000001164.sgf			2026-09-23			
+missed_puzzles\puzzle-2000003614.sgf			2026-09-23			
+missed_puzzles\puzzle-2000003673.sgf			2026-09-23			
+missed_puzzles\puzzle-2000003780.sgf			2026-09-23			
+missed_puzzles\puzzle-2000004027.sgf			2026-09-23			
+missed_puzzles\puzzle-2000007789.sgf			2026-09-23			
+missed_puzzles\puzzle-2000009551.sgf			2026-09-23			
 missed_puzzles\puzzle-2888.sgf			2026-07-12			
 missed_puzzles\puzzle-2889.sgf			2026-07-30			
 missed_puzzles\puzzle-2890.sgf			2026-07-30			
@@ -141,3 +185,15 @@ puzzles\20260830-211752-Amne-move184.sgf	boris-volkov	Amne	2026-08-30
 puzzles\20260830-211752-Amne-move186.sgf	boris-volkov	Amne	2026-08-30			
 puzzles\20260830-211752-Amne-move190.sgf	boris-volkov	Amne	2026-08-30			
 puzzles\20260830-211752-Amne-move192.sgf	boris-volkov	Amne	2026-08-30			
+puzzles\20261014-113141-dougd1-move195.sgf	dougd1	boris-volkov	2026-10-14			
+puzzles\20261016-143050-sirhc-move25.sgf	sirhc	boris-volkov	2026-10-16			
+puzzles\20261027-004421-Laralike-move32.sgf	boris-volkov	Laralike	2026-10-27			
+puzzles\20261028-002259-bubussnn88-move95.sgf	bubussnn88	boris-volkov	2026-10-28			
+puzzles\20261028-004531-Cattoz-move73.sgf	boris-volkov	Cattoz	2026-10-28			
+puzzles\20261028-004536-Cattoz-move213.sgf	boris-volkov	Cattoz	2026-10-28			
+puzzles\20261028-004537-Cattoz-move215.sgf	boris-volkov	Cattoz	2026-10-28			
+puzzles\20261028-004537-Cattoz-move217.sgf	boris-volkov	Cattoz	2026-10-28			
+puzzles\20261028-004537-Cattoz-move219.sgf	boris-volkov	Cattoz	2026-10-28			
+puzzles\20261028-004537-Cattoz-move221.sgf	boris-volkov	Cattoz	2026-10-28			
+puzzles\20261028-004537-Cattoz-move223.sgf	boris-volkov	Cattoz	2026-10-28			
+puzzles\20261028-005408-benfr2-move30.sgf	boris-volkov	ben.fr2	2026-10-28			
