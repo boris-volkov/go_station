@@ -17,7 +17,62 @@
 
 #ifndef _WIN32
 #include <sys/stat.h>
+#include <unistd.h>
 #endif
+
+
+// ---------------------------------------------------------------------------
+// Executable-relative paths
+//
+// games/ used to be resolved against the current working directory, so the app
+// only found its library when launched from the repo root. Started any other
+// way (a desktop launcher, or just ./apps/go_viewer/go_viewer) it found nothing
+// and died in the "No SGF files found" message box below — which, on Linux, is
+// a separate zenity process trapped behind our fullscreen window, so the whole
+// thing looked like a frozen black screen. Same exe_dir() approach ogs_client
+// already uses.
+
+static std::string exe_dir() {
+#ifdef _WIN32
+    char buf[MAX_PATH];
+    DWORD n = GetModuleFileNameA(nullptr, buf, MAX_PATH);
+    if (n > 0) {
+        std::string path(buf, n);
+        auto slash = path.find_last_of("\\/");
+        if (slash != std::string::npos) return path.substr(0, slash + 1);
+    }
+#else
+    char buf[4096];
+    ssize_t n = readlink("/proc/self/exe", buf, sizeof(buf) - 1);
+    if (n > 0) {
+        std::string path(buf, n);
+        auto slash = path.find_last_of('/');
+        if (slash != std::string::npos) return path.substr(0, slash + 1);
+    }
+#endif
+    return "";
+}
+
+static bool is_dir(const std::string& p) {
+#ifdef _WIN32
+    DWORD a = GetFileAttributesW(Catalog::utf8_to_wide(p).c_str());
+    return a != INVALID_FILE_ATTRIBUTES && (a & FILE_ATTRIBUTE_DIRECTORY);
+#else
+    struct stat st;
+    return stat(p.c_str(), &st) == 0 && S_ISDIR(st.st_mode);
+#endif
+}
+
+// Next to the executable first (a packaged/release layout), then two levels up
+// (apps/go_viewer/ inside the source tree), then the plain cwd-relative name so
+// running from the repo root keeps working exactly as before.
+static std::string resolve_games_dir() {
+    std::string d = exe_dir() + DEFAULT_GAMES_DIR;
+    if (is_dir(d)) return d;
+    d = exe_dir() + "../../" + DEFAULT_GAMES_DIR;
+    if (is_dir(d)) return d;
+    return DEFAULT_GAMES_DIR;
+}
 
 
 // ---------------------------------------------------------------------------
@@ -623,6 +678,7 @@ private:
     }
 
     bool init();
+    void close_window();
     void cleanup();
 
     // Returns true if the game loop should quit the application entirely.
@@ -834,10 +890,19 @@ bool App::init() {
     return true;
 }
 
-void App::cleanup() {
+// Drop the fullscreen window (and everything hanging off it) without shutting
+// SDL down. Needed before SDL_ShowSimpleMessageBox: on Linux that spawns a
+// separate zenity/kdialog process, which the compositor stacks *behind* a
+// fullscreen window — leaving an unreachable modal and an app that looks like
+// it has hung on a black screen.
+void App::close_window() {
     delete renderer; renderer = nullptr;
     if (sdl_rend) { SDL_DestroyRenderer(sdl_rend); sdl_rend = nullptr; }
     if (window)   { SDL_DestroyWindow(window);      window   = nullptr; }
+}
+
+void App::cleanup() {
+    close_window();
     SDL_Quit();
 }
 
@@ -1611,13 +1676,16 @@ bool App::play_current_game() {
 // Top-level run
 
 int App::run(int /*argc*/, char* /*argv*/[]) {
-    games_dir = DEFAULT_GAMES_DIR;
+    games_dir = resolve_games_dir();
 
-    // If test.sgf exists, load it first
-    if (FILE* fp = fopen("test.sgf", "r")) {
-        fclose(fp);
-        forced_path = "test.sgf";
-        nav_request = NAV_SELECT;
+    // If test.sgf exists, load it first (cwd first, then next to the exe)
+    for (const std::string& cand : { std::string("test.sgf"), exe_dir() + "test.sgf" }) {
+        if (FILE* fp = fopen(cand.c_str(), "r")) {
+            fclose(fp);
+            forced_path = cand;
+            nav_request = NAV_SELECT;
+            break;
+        }
     }
 
     if (!init()) {
@@ -1627,6 +1695,9 @@ int App::run(int /*argc*/, char* /*argv*/[]) {
     }
 
     bool quit = false;
+    static constexpr int MAX_LOAD_FAILURES = 20;
+    int consecutive_load_failures = 0;
+
     while (!quit) {
         std::string path;
 
@@ -1645,17 +1716,29 @@ int App::run(int /*argc*/, char* /*argv*/[]) {
                      "Place .sgf files in a 'games/' folder next to the executable,\n"
                      "or put a test.sgf next to the executable.",
                      games_dir.c_str());
-            SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Go Viewer", msg, window);
+            fprintf(stderr, "go_viewer: %s\n", msg);
+            close_window();
+            SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Go Viewer", msg, nullptr);
             break;
         }
 
         if (!load_sgf(path, sgf)) {
-            char msg[512];
-            snprintf(msg, sizeof(msg), "Failed to load:\n%s", path.c_str());
-            SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_WARNING, "Go Viewer", msg, window);
-            SDL_Delay(500);
+            // Skip to the next file rather than popping a modal per failure: the
+            // dialog would be stuck behind the fullscreen window and this loop
+            // would spin on it forever. Only give up once nothing at all loads.
+            fprintf(stderr, "go_viewer: failed to load %s\n", path.c_str());
+            if (++consecutive_load_failures >= MAX_LOAD_FAILURES) {
+                char msg[512];
+                snprintf(msg, sizeof(msg),
+                         "Failed to load %d SGF files in a row.\n\nLast one:\n%s",
+                         consecutive_load_failures, path.c_str());
+                close_window();
+                SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Go Viewer", msg, nullptr);
+                break;
+            }
             continue;
         }
+        consecutive_load_failures = 0;
 
         bool should_quit = play_current_game();
         if (should_quit) { quit = true; break; }
