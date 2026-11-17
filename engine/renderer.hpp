@@ -398,6 +398,9 @@ public:
     void annot_clear();
     bool annot_has_content() const { return annot_any_; }
 
+    // Display orientation (ORIENT_* bits) copied into every BoardView; see go_viewer.hpp
+    int  board_orient = 0;
+
     void get_board_view(BoardView& view, int active_size = BOARD_SIZE) const;
     bool screen_to_board(const BoardView& view, int mx, int my, int& r, int& f) const;
     void board_to_screen(const BoardView& view, int br, int bf, int& x, int& y) const;

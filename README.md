@@ -147,7 +147,9 @@ directories — `apps/go_viewer/go_viewer.exe`, `apps/ogs_client/ogs_client.exe`
 |-----|--------|
 | **Q** | Quit |
 | **N** | Next game |
-| **R** | Restart current game |
+| **Shift+R** | Restart current game |
+| **R** | Rotate board 90° clockwise |
+| **H / V** | Flip board horizontally / vertically |
 | **C** | Open catalog browser |
 | **ESC** | Toggle help overlay |
 | **Up / Down** | Faster / slower auto-playback |

@@ -142,11 +142,14 @@ void Renderer::get_board_view(BoardView& view, int active_size) const {
     view.offset_y    = (h - bg_size) / 2 + view.margin;
     view.screen_w    = w;
     view.screen_h    = h;
+    view.orient      = board_orient;
 }
 
 void Renderer::board_to_screen(const BoardView& view, int br, int bf, int& x, int& y) const {
-    x = view.offset_x + bf * view.square;
-    y = view.offset_y + br * view.square;
+    int dr, df;
+    orient_to_display(view, br, bf, dr, df);
+    x = view.offset_x + df * view.square;
+    y = view.offset_y + dr * view.square;
 }
 
 bool Renderer::screen_to_board(const BoardView& view, int mx, int my, int& r, int& f) const {
@@ -162,7 +165,7 @@ bool Renderer::screen_to_board(const BoardView& view, int mx, int my, int& r, in
     int local_y = rel_y - br * view.square;
     if (local_x < inset || local_x >= view.square - inset) return false;
     if (local_y < inset || local_y >= view.square - inset) return false;
-    r = br; f = bf;
+    display_to_board(view, br, bf, r, f);
     return true;
 }
 
@@ -465,8 +468,7 @@ void Renderer::fill_ellipse_rotated(int cx, int cy, float ux, float uy, int ra, 
 }
 
 void Renderer::draw_stone_circle(const BoardView& view, int r, int f, int is_black, Uint8 alpha, bool shadow_pass) {
-    int cx     = view.offset_x + f * view.square + view.square / 2;
-    int cy     = view.offset_y + r * view.square + view.square / 2;
+    int cx, cy; cell_center(view, r, f, cx, cy);
     // Round and square stones sit inside the cell with a couple of pixels of board
     // showing between neighbours. Octagons deliberately fill it: at exactly half a
     // cell, orthogonal neighbours meet flat edge to flat edge, which is the whole
@@ -805,10 +807,8 @@ void Renderer::render_chain_connections(const BoardView& view, const char board[
                     int rev = (dir + 2) % 4;
                     if (drawn[sr][sf][dir] || drawn[ar][af][rev]) continue;
                     drawn[sr][sf][dir] = drawn[ar][af][rev] = 1;
-                    int x1 = view.offset_x + sf * view.square + view.square / 2;
-                    int y1 = view.offset_y + sr * view.square + view.square / 2;
-                    int x2 = view.offset_x + af * view.square + view.square / 2;
-                    int y2 = view.offset_y + ar * view.square + view.square / 2;
+                    int x1, y1; cell_center(view, sr, sf, x1, y1);
+                    int x2, y2; cell_center(view, ar, af, x2, y2);
                     int thick    = (view.square - 4) / 2;
                     int stone_r  = view.square / 2 - 2;
                     draw_stone_link(x1, y1, x2, y2, thick, color, shadows_only, stone_r);
@@ -823,8 +823,7 @@ void Renderer::render_liberties(const BoardView& view,
     if (lib_count == 0) return;
     SDL_SetRenderDrawBlendMode(sdl, SDL_BLENDMODE_BLEND);
     for (int i = 0; i < lib_count; i++) {
-        int cx = view.offset_x + lib_f[i] * view.square + view.square / 2;
-        int cy = view.offset_y + lib_r[i] * view.square + view.square / 2;
+        int cx, cy; cell_center(view, lib_r[i], lib_f[i], cx, cy);
         int rad = view.square / 4;
         if (rad < 2) rad = 2;
         SDL_SetRenderDrawColor(sdl, Palette::LIBERTY_DOT.r, Palette::LIBERTY_DOT.g, Palette::LIBERTY_DOT.b, Palette::LIBERTY_DOT.a);
@@ -1166,7 +1165,9 @@ void Renderer::render_help_overlay(const BoardView& view, bool show_help, bool l
         {nullptr,      "NAVIGATION"},
         {"Q",          "QUIT"},
         {"N",          "NEXT GAME"},
-        {"R",          "RESTART"},
+        {"SHIFT+R",    "RESTART"},
+        {"R",          "ROTATE BOARD"},
+        {"H / V",      "FLIP HORIZ / VERT"},
         {"C",          "CATALOG"},
         {"S",          "SAVE POSITION"},
         {"ESC",        "TOGGLE HELP"},
@@ -2440,6 +2441,9 @@ void Renderer::render_box_selection(const BoardView& view, const DrawState& ds) 
         int x1, y1, x2, y2;
         board_to_screen(view, rmin, fmin, x1, y1);
         board_to_screen(view, rmax, fmax, x2, y2);
+        // Orientation can swap which corner lands top-left on screen
+        if (x1 > x2) std::swap(x1, x2);
+        if (y1 > y2) std::swap(y1, y2);
         // Shift to intersection centers
         x1 += half; y1 += half;
         x2 += half; y2 += half;
@@ -3145,8 +3149,7 @@ void Renderer::render_capture_anim(const BoardView& view, const DrawState& ds, b
             // The stone's own silhouette, filled flat and unshaded — losing the
             // shading is what makes white stones visibly blink too. Centre and
             // radius mirror draw_stone_circle so the flash covers the stone exactly.
-            int cx     = view.offset_x + c.f * view.square + view.square / 2;
-            int cy     = view.offset_y + c.r * view.square + view.square / 2;
+            int cx, cy; cell_center(view, c.r, c.f, cx, cy);
             int radius = std::max(2, view.square / 2 - (octagon_stones_ ? 0 : 2));
             SDL_SetRenderDrawColor(sdl, 250, 250, 236, 255);
             if (octagon_stones_) {
@@ -3179,6 +3182,8 @@ uint64_t Renderer::compute_cache_hash(const DrawState& ds) const {
         for (char c : s) mix8(uint8_t(c));
         mix8(0);
     };
+
+    mix8(uint8_t(board_orient));
 
     // Active board array
     const char (*board)[MAX_BOARD_SIZE] =
@@ -3491,8 +3496,7 @@ void Renderer::render_board_content(const BoardView& view, const Overlay* overla
             pts[npts][0] = ctr; pts[npts][1] = n-1-ho; npts++;
         }
         for (int i = 0; i < npts; i++) {
-            int x = view.offset_x + pts[i][1] * view.square + view.square / 2;
-            int y = view.offset_y + pts[i][0] * view.square + view.square / 2;
+            int x, y; cell_center(view, pts[i][0], pts[i][1], x, y);
             SDL_Rect sr = {x - star_r, y - star_r, star_r * 2, star_r * 2};
             SDL_RenderFillRect(sdl, &sr);
         }
@@ -3548,13 +3552,11 @@ void Renderer::render_board_content(const BoardView& view, const Overlay* overla
     if (!fill_view && (ds.live_dead_stones || ds.live_ownership)) {
         SDL_SetRenderDrawBlendMode(sdl, SDL_BLENDMODE_BLEND);
         int sq    = view.square;
-        int sq2   = sq / 2;
         int tmark = std::max(3, sq / 5);  // territory square half-size
 
         for (int r = 0; r < n; r++) {
             for (int f = 0; f < n; f++) {
-                int cx = view.offset_x + f * sq + sq2;
-                int cy = view.offset_y + r * sq + sq2;
+                int cx, cy; cell_center(view, r, f, cx, cy);
 
                 // Territory squares: empty cells AND dead-stone cells.
                 // Dead stones are removed for scoring, so their cells count as the
@@ -3606,13 +3608,11 @@ void Renderer::render_board_content(const BoardView& view, const Overlay* overla
     // permanent row/column highlight was found too distracting during live play).
     if (ds.live_last_move_r >= 0 && ds.live_last_move_f >= 0) {
         int sq   = view.square;
-        int half = sq / 2;
         int rad  = std::max(4, sq * 3 / 8);
         int lr   = ds.live_last_move_r;
         int lf   = ds.live_last_move_f;
         if (lr < n && lf < n) {
-            int cx = view.offset_x + lf * sq + half;
-            int cy = view.offset_y + lr * sq + half;
+            int cx, cy; cell_center(view, lr, lf, cx, cy);
             SDL_SetRenderDrawBlendMode(sdl, SDL_BLENDMODE_BLEND);
             // Thin dark fringe (1 px) so the ring reads against any background
             SDL_SetRenderDrawColor(sdl, 0, 0, 0, 130);
@@ -3631,13 +3631,11 @@ void Renderer::render_board_content(const BoardView& view, const Overlay* overla
     if (ds.live_actual_move_r >= 0 && ds.live_actual_move_f >= 0 &&
         ds.live_hovered_suggestion < 0) {
         int sq   = view.square;
-        int half = sq / 2;
         int rad  = std::max(4, sq * 3 / 8);
         int ar   = ds.live_actual_move_r;
         int af   = ds.live_actual_move_f;
         if (ar < n && af < n) {
-            int cx = view.offset_x + af * sq + half;
-            int cy = view.offset_y + ar * sq + half;
+            int cx, cy; cell_center(view, ar, af, cx, cy);
             SDL_SetRenderDrawBlendMode(sdl, SDL_BLENDMODE_BLEND);
             // Thin dark fringe (1 px) so the ring reads against any background
             SDL_SetRenderDrawColor(sdl, 0, 0, 0, 130);
@@ -3662,7 +3660,6 @@ void Renderer::render_board_content(const BoardView& view, const Overlay* overla
     if (ds.live_suggestions && ds.live_suggestion_count > 0) {
         SDL_SetRenderDrawBlendMode(sdl, SDL_BLENDMODE_BLEND);
         int sq   = view.square;
-        int half = sq / 2;
         int rad  = std::max(4, sq * 3 / 8);
 
         for (int i = 0; i < std::min(ds.live_suggestion_count, 3); i++) {
@@ -3671,8 +3668,7 @@ void Renderer::render_board_content(const BoardView& view, const Overlay* overla
             if (s.row < 0 || s.col < 0 || s.row >= n || s.col >= n) continue;
             if (active_board[s.row][s.col] != 0) continue;  // stone already there
 
-            int cx = view.offset_x + s.col * sq + half;
-            int cy = view.offset_y + s.row * sq + half;
+            int cx, cy; cell_center(view, s.row, s.col, cx, cy);
 
             if (i == ds.live_hovered_suggestion) {
                 // Hovered: show as the player's actual stone, numbered 1
@@ -3722,8 +3718,7 @@ void Renderer::render_board_content(const BoardView& view, const Overlay* overla
                 int pr = hs.pv_row[pv];
                 int pf = hs.pv_col[pv];
                 if (pr < 0 || pr >= n || pf < 0 || pf >= n) continue;
-                int pcx = view.offset_x + pf * sq + half;
-                int pcy = view.offset_y + pr * sq + half;
+                int pcx, pcy; cell_center(view, pr, pf, pcx, pcy);
                 // pv[0] = opponent's response, pv[1] = suggestion player again, etc.
                 bool is_black = (pv % 2 == 0) ? !black_plays_first : black_plays_first;
                 SDL_SetRenderDrawColor(sdl, 0, 0, 0, 180);
@@ -3771,7 +3766,6 @@ void Renderer::render_board_content(const BoardView& view, const Overlay* overla
             }
         }
 
-        int half   = view.square / 2;
         int radius = view.square / 2 - 2;
         for (int r = 0; r < n; r++) {
             for (int f = 0; f < n; f++) {
@@ -3787,8 +3781,7 @@ void Renderer::render_board_content(const BoardView& view, const Overlay* overla
                 if (radius >= 20 && ndigits == 1) scale = 3;
                 int tw = text_width_px(buf, scale);
                 int th = 7 * scale;
-                int cx = view.offset_x + f * view.square + half;
-                int cy = view.offset_y + r * view.square + half;
+                int cx, cy; cell_center(view, r, f, cx, cy);
                 int tx = cx - tw / 2;
                 int ty = cy - th / 2;
                 if (captured) {
@@ -3929,8 +3922,7 @@ void Renderer::render_board_content(const BoardView& view, const Overlay* overla
     for (int i = 0; i < ds.live_label_count; i++) {
         const BoardLabel& l = ds.live_labels[i];
         if (l.r < 0 || l.r >= n || l.f < 0 || l.f >= n) continue;
-        int cx = view.offset_x + l.f * view.square + view.square / 2;
-        int cy = view.offset_y + l.r * view.square + view.square / 2;
+        int cx, cy; cell_center(view, l.r, l.f, cx, cy);
         int cell = active_board[l.r][l.f];
         int scale = (view.square >= 40) ? 3 : 2;
         char buf[2] = { l.ch, '\0' };
@@ -4009,8 +4001,7 @@ void Renderer::render_board(const BoardView& view, const Overlay* overlay, const
         int rad = std::max(3, view.square * 3 / 10);
         for (int i = 0; i < ds.live_marker_count; i++) {
             const PointMarker& m = ds.live_markers[i];
-            int cx = view.offset_x + m.f * view.square + view.square / 2;
-            int cy = view.offset_y + m.r * view.square + view.square / 2;
+            int cx, cy; cell_center(view, m.r, m.f, cx, cy);
             SDL_SetRenderDrawColor(sdl, m.color.r, m.color.g, m.color.b,
                                    m.color.a ? m.color.a : 255);
             fill_circle(cx, cy, rad);
@@ -4021,8 +4012,7 @@ void Renderer::render_board(const BoardView& view, const Overlay* overlay, const
 
     // Live board cursor — yellow X drawn at the grid intersection (45° rotated, bold).
     if (board_on_screen && ds.live_mode && ds.live_cursor_r >= 0 && ds.live_cursor_f >= 0) {
-        int cx = view.offset_x + ds.live_cursor_f * view.square + view.square / 2;
-        int cy = view.offset_y + ds.live_cursor_r * view.square + view.square / 2;
+        int cx, cy; cell_center(view, ds.live_cursor_r, ds.live_cursor_f, cx, cy);
         int arm = view.square * 2 / 5;
         int gap = std::max(2, view.square / 9);
         int thick = std::max(2, view.square / 10);  // boldness
@@ -4095,26 +4085,42 @@ void Renderer::render_board_coordinates(const BoardView& view, const DrawState& 
     SDL_Color dim    = {150, 165, 180, 230};
     SDL_Color yellow = {255, 220, 0, 255};
 
-    int cur_r = ds.live_cursor_r, cur_f = ds.live_cursor_f;
+    // Cursor in display cells, so the highlighted label sits on the cursor's
+    // screen row/column whatever the board orientation.
+    int cur_dr = -1, cur_df = -1;
+    if (ds.live_cursor_r >= 0 && ds.live_cursor_f >= 0)
+        orient_to_display(view, ds.live_cursor_r, ds.live_cursor_f, cur_dr, cur_df);
 
-    // Top & bottom edges: column letters
-    for (int f = 0; f < n; f++) {
-        char buf[2] = { col_letter(f), '\0' };
+    // Each edge label names the board line actually shown there: column letters
+    // across the top normally, but row numbers once the board is transposed (any
+    // quarter turn), and vice versa down the sides.
+    bool transposed = (view.orient & ORIENT_TRANSPOSE) != 0;
+    auto label_for = [&](int dr, int df, bool across, char* buf, size_t sz) {
+        int r, f;
+        display_to_board(view, dr, df, r, f);
+        if (across != transposed) snprintf(buf, sz, "%c", col_letter(f));
+        else                      snprintf(buf, sz, "%d", (n - r) % 100);
+    };
+
+    // Top & bottom edges
+    for (int df = 0; df < n; df++) {
+        char buf[4];
+        label_for(0, df, true, buf, sizeof(buf));
         int  tw  = text_width_px(buf, scale);
-        int  cx  = view.offset_x + f * sq + sq / 2;
-        bool hi  = (f == cur_f && cur_r >= 0);
+        int  cx  = view.offset_x + df * sq + sq / 2;
+        bool hi  = (df == cur_df);
         SDL_Color col = hi ? yellow : dim;
         draw_text(cx - tw / 2, view.offset_y - view.margin + (view.margin - th) / 2, scale, buf, col);
         draw_text(cx - tw / 2, view.offset_y + n * sq   + (view.margin - th) / 2, scale, buf, col);
     }
 
-    // Left & right edges: row numbers — size at the top, 1 at the bottom (Go convention)
-    for (int r = 0; r < n; r++) {
+    // Left & right edges
+    for (int dr = 0; dr < n; dr++) {
         char buf[4];
-        snprintf(buf, sizeof(buf), "%d", n - r);
+        label_for(dr, 0, false, buf, sizeof(buf));
         int  tw  = text_width_px(buf, scale);
-        int  cy  = view.offset_y + r * sq + sq / 2;
-        bool hi  = (r == cur_r && cur_f >= 0);
+        int  cy  = view.offset_y + dr * sq + sq / 2;
+        bool hi  = (dr == cur_dr);
         SDL_Color col = hi ? yellow : dim;
         draw_text(view.offset_x - view.margin + (view.margin - tw) / 2, cy - th / 2, scale, buf, col);
         draw_text(view.offset_x + n * sq   + (view.margin - tw) / 2, cy - th / 2, scale, buf, col);
@@ -4154,8 +4160,8 @@ void Renderer::render_guess_heatmap(const BoardView& view, const DrawState& ds) 
                     continue;
                 // 1px inset keeps the grid visible between cells, so the block reads
                 // as discrete scoring points rather than one smeared blob.
-                SDL_Rect cell = {view.offset_x + ff * sq + 1, view.offset_y + rr * sq + 1,
-                                 sq - 2, sq - 2};
+                int ccx, ccy; cell_center(view, rr, ff, ccx, ccy);
+                SDL_Rect cell = {ccx - sq / 2 + 1, ccy - sq / 2 + 1, sq - 2, sq - 2};
                 SDL_RenderFillRect(sdl, &cell);
             }
     }
@@ -4163,7 +4169,8 @@ void Renderer::render_guess_heatmap(const BoardView& view, const DrawState& ds) 
     // Bullseye outline — the one cell worth full marks, called out so the centre is
     // unmistakable once a stone or cursor is drawn over it.
     SDL_SetRenderDrawColor(sdl, 255, 255, 255, 220);
-    SDL_Rect centre = {view.offset_x + f * sq + 1, view.offset_y + r * sq + 1, sq - 2, sq - 2};
+    int ccx, ccy; cell_center(view, r, f, ccx, ccy);
+    SDL_Rect centre = {ccx - sq / 2 + 1, ccy - sq / 2 + 1, sq - 2, sq - 2};
     SDL_RenderDrawRect(sdl, &centre);
 }
 
@@ -4176,8 +4183,7 @@ void Renderer::render_software_cursor(const BoardView& view, const DrawState& ds
     // floating at the raw pointer, so the cell that scores is never ambiguous.
     if (ds.cursor_snap_heat && ds.guess_heat_r >= 0 && ds.guess_heat_f >= 0
         && view.square > 0) {
-        cx = view.offset_x + ds.guess_heat_f * view.square + view.square / 2;
-        cy = view.offset_y + ds.guess_heat_r * view.square + view.square / 2;
+        cell_center(view, ds.guess_heat_r, ds.guess_heat_f, cx, cy);
     }
 
     if (ds.cursor_type >= 2) {

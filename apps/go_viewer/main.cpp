@@ -575,10 +575,11 @@ private:
 
     // Clamp a screen position to the nearest board intersection.
     void screen_to_board_clamped(const BoardView& view, int mx, int my, int& r, int& f) {
-        r = (my - view.offset_y) / view.square;
-        f = (mx - view.offset_x) / view.square;
-        r = std::max(0, std::min(view.active_size - 1, r));
-        f = std::max(0, std::min(view.active_size - 1, f));
+        int dr = (my - view.offset_y) / view.square;
+        int df = (mx - view.offset_x) / view.square;
+        dr = std::max(0, std::min(view.active_size - 1, dr));
+        df = std::max(0, std::min(view.active_size - 1, df));
+        display_to_board(view, dr, df, r, f);
     }
 
     // Catalog thumbnails: opening (first N moves) and final position.
@@ -752,7 +753,8 @@ private:
             if (hv.square > 0 && cx >= hv.offset_x && cy >= hv.offset_y) {
                 int hf = (cx - hv.offset_x) / hv.square;
                 int hr = (cy - hv.offset_y) / hv.square;
-                if (hr < hv.active_size && hf < hv.active_size) { heat_r = hr; heat_f = hf; }
+                if (hr < hv.active_size && hf < hv.active_size)
+                    display_to_board(hv, hr, hf, heat_r, heat_f);
             }
         }
 
@@ -964,7 +966,22 @@ void App::handle_key(SDL_Keycode key, const Uint8* /*kb*/, bool& quit) {
     }
 
     if (key == SDLK_n) { nav_request = NAV_NEXT; quit = true; return; }
-    if (key == SDLK_r) {
+    if (key == SDLK_r && !(SDL_GetModState() & KMOD_SHIFT)) {
+        renderer->board_orient = orient_rotate_cw(renderer->board_orient);
+        draw_board();
+        return;
+    }
+    if (key == SDLK_h) {
+        renderer->board_orient = orient_flip_h(renderer->board_orient);
+        draw_board();
+        return;
+    }
+    if (key == SDLK_v) {
+        renderer->board_orient = orient_flip_v(renderer->board_orient);
+        draw_board();
+        return;
+    }
+    if (key == SDLK_r) {   // Shift+R
         if (in_analysis()) {
             // Reset analysis board back to the position it was opened on
             analysis->reset_to_base();
@@ -1196,9 +1213,11 @@ void App::handle_guess_lclick(const BoardView& view, int mx, int my,
     // you guess.
     if (view.square <= 0) return;
     if (mx < view.offset_x || my < view.offset_y) return;   // before the divide
-    int f = (mx - view.offset_x) / view.square;
-    int r = (my - view.offset_y) / view.square;
-    if (r >= view.active_size || f >= view.active_size) return;
+    int df = (mx - view.offset_x) / view.square;
+    int dr = (my - view.offset_y) / view.square;
+    if (dr >= view.active_size || df >= view.active_size) return;
+    int r, f;
+    display_to_board(view, dr, df, r, f);
     if (game.board[r][f] == 0) {
         gr = r; gf = f;
         guess_pending = true;

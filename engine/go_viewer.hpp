@@ -75,7 +75,51 @@ struct BoardView {
     int offset_x = 0, offset_y = 0;  // pixel position of the top-left grid intersection
     int screen_w = 0, screen_h = 0;
     int board_px = 0;  // grid area in pixels (square * active_size)
+    int orient   = 0;  // display orientation: ORIENT_* bits (see below)
 };
+
+// Board display orientation. A board point (r, f) is shown at display cell
+// (dr, df) obtained by: transpose (swap r/f), then mirror columns, then mirror
+// rows — each step only when its bit is set. The eight combinations cover every
+// rotation and reflection of the square. Only rendering and hit-testing see it;
+// all game state stays in true board coordinates.
+enum : int { ORIENT_TRANSPOSE = 1, ORIENT_FLIP_H = 2, ORIENT_FLIP_V = 4 };
+
+// Compose a further transform on top of an existing orientation.
+inline int orient_flip_h(int o) { return o ^ ORIENT_FLIP_H; }
+inline int orient_flip_v(int o) { return o ^ ORIENT_FLIP_V; }
+inline int orient_rotate_cw(int o) {
+    // Rotating 90° clockwise = transpose then mirror columns, applied after o.
+    // Pushing it through: T'=!T, H'=!V, V'=H.
+    int t = o & ORIENT_TRANSPOSE, h = (o & ORIENT_FLIP_H) != 0, v = (o & ORIENT_FLIP_V) != 0;
+    return (t ^ ORIENT_TRANSPOSE) | (v ? 0 : ORIENT_FLIP_H) | (h ? ORIENT_FLIP_V : 0);
+}
+
+// Board point -> display cell
+inline void orient_to_display(const BoardView& v, int r, int f, int& dr, int& df) {
+    int n = v.active_size;
+    dr = r; df = f;
+    if (v.orient & ORIENT_TRANSPOSE) { dr = f; df = r; }
+    if (v.orient & ORIENT_FLIP_H)    df = n - 1 - df;
+    if (v.orient & ORIENT_FLIP_V)    dr = n - 1 - dr;
+}
+
+// Display cell -> board point (inverse of orient_to_display)
+inline void display_to_board(const BoardView& v, int dr, int df, int& r, int& f) {
+    int n = v.active_size;
+    if (v.orient & ORIENT_FLIP_V)    dr = n - 1 - dr;
+    if (v.orient & ORIENT_FLIP_H)    df = n - 1 - df;
+    r = dr; f = df;
+    if (v.orient & ORIENT_TRANSPOSE) { r = df; f = dr; }
+}
+
+// Pixel centre of board point (r, f), honouring the view's orientation
+inline void cell_center(const BoardView& v, int r, int f, int& cx, int& cy) {
+    int dr, df;
+    orient_to_display(v, r, f, dr, df);
+    cx = v.offset_x + df * v.square + v.square / 2;
+    cy = v.offset_y + dr * v.square + v.square / 2;
+}
 
 struct Overlay {
     bool  active   = false;

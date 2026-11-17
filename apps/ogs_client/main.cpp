@@ -946,6 +946,19 @@ private:
                && analysis_cur_ && !analysis_cur_->children.empty();
     }
     void toggle_guess_mode();
+
+    // Step the board cursor one point in SCREEN direction (dr/df in display rows/
+    // columns), so the d-pad/arrows still match what you see after R/H/V rotates or
+    // flips the board. n is the highest index the cursor may reach.
+    void move_cursor(int ddr, int ddf, int n) {
+        BoardView v;
+        renderer_->get_board_view(v, game_.board_size);
+        int dr, df;
+        orient_to_display(v, game_.cursor_r, game_.cursor_f, dr, df);
+        dr = std::max(0, std::min(n, dr + ddr));
+        df = std::max(0, std::min(n, df + ddf));
+        display_to_board(v, dr, df, game_.cursor_r, game_.cursor_f);
+    }
     void guess_commit();
     // Scoreboard text for the status line (the live client's gutter is the status
     // line's, so the guess HUD reports through it rather than drawing its own).
@@ -2490,13 +2503,13 @@ void App::handle_controller_button(Uint8 btn) {
         int n = game_.board_size - 1;
         switch (btn) {
         case SDL_CONTROLLER_BUTTON_DPAD_UP:
-            game_.cursor_r = std::max(0, game_.cursor_r - 1); draw(); break;
+            move_cursor(-1, 0, n); draw(); break;
         case SDL_CONTROLLER_BUTTON_DPAD_DOWN:
-            game_.cursor_r = std::min(n, game_.cursor_r + 1); draw(); break;
+            move_cursor(1, 0, n); draw(); break;
         case SDL_CONTROLLER_BUTTON_DPAD_LEFT:
-            game_.cursor_f = std::max(0, game_.cursor_f - 1); draw(); break;
+            move_cursor(0, -1, n); draw(); break;
         case SDL_CONTROLLER_BUTTON_DPAD_RIGHT:
-            game_.cursor_f = std::min(n, game_.cursor_f + 1); draw(); break;
+            move_cursor(0, 1, n); draw(); break;
 
         case SDL_CONTROLLER_BUTTON_A:
             if (game_.history_pos >= 0) { game_.history_pos = -1; draw(); break; }  // exit history
@@ -2605,13 +2618,13 @@ void App::handle_controller_button(Uint8 btn) {
         int n = game_.board_size - 1;
         switch (btn) {
         case SDL_CONTROLLER_BUTTON_DPAD_UP:
-            game_.cursor_r = std::max(0, game_.cursor_r - 1); draw(); break;
+            move_cursor(-1, 0, n); draw(); break;
         case SDL_CONTROLLER_BUTTON_DPAD_DOWN:
-            game_.cursor_r = std::min(n, game_.cursor_r + 1); draw(); break;
+            move_cursor(1, 0, n); draw(); break;
         case SDL_CONTROLLER_BUTTON_DPAD_LEFT:
-            game_.cursor_f = std::max(0, game_.cursor_f - 1); draw(); break;
+            move_cursor(0, -1, n); draw(); break;
         case SDL_CONTROLLER_BUTTON_DPAD_RIGHT:
-            game_.cursor_f = std::min(n, game_.cursor_f + 1); draw(); break;
+            move_cursor(0, 1, n); draw(); break;
         case SDL_CONTROLLER_BUTTON_LEFTSHOULDER:
         case SDL_CONTROLLER_BUTTON_RIGHTSHOULDER:
             // Jump between ALL branches that reach the current move number, anywhere
@@ -5494,13 +5507,13 @@ void App::handle_joseki_button(Uint8 btn) {
     int n = game_.board_size - 1;
     switch (btn) {
     case SDL_CONTROLLER_BUTTON_DPAD_UP:
-        game_.cursor_r = std::max(0, game_.cursor_r - 1); draw(); break;
+        move_cursor(-1, 0, n); draw(); break;
     case SDL_CONTROLLER_BUTTON_DPAD_DOWN:
-        game_.cursor_r = std::min(n, game_.cursor_r + 1); draw(); break;
+        move_cursor(1, 0, n); draw(); break;
     case SDL_CONTROLLER_BUTTON_DPAD_LEFT:
-        game_.cursor_f = std::max(0, game_.cursor_f - 1); draw(); break;
+        move_cursor(0, -1, n); draw(); break;
     case SDL_CONTROLLER_BUTTON_DPAD_RIGHT:
-        game_.cursor_f = std::min(n, game_.cursor_f + 1); draw(); break;
+        move_cursor(0, 1, n); draw(); break;
 
     case SDL_CONTROLLER_BUTTON_A: {
         // Play the book move under the cursor
@@ -6897,13 +6910,13 @@ void App::handle_puzzle_button(Uint8 btn) {
     int n = game_.board_size - 1;
     switch (btn) {
     case SDL_CONTROLLER_BUTTON_DPAD_UP:
-        game_.cursor_r = std::max(0, game_.cursor_r - 1); draw(); break;
+        move_cursor(-1, 0, n); draw(); break;
     case SDL_CONTROLLER_BUTTON_DPAD_DOWN:
-        game_.cursor_r = std::min(n, game_.cursor_r + 1); draw(); break;
+        move_cursor(1, 0, n); draw(); break;
     case SDL_CONTROLLER_BUTTON_DPAD_LEFT:
-        game_.cursor_f = std::max(0, game_.cursor_f - 1); draw(); break;
+        move_cursor(0, -1, n); draw(); break;
     case SDL_CONTROLLER_BUTTON_DPAD_RIGHT:
-        game_.cursor_f = std::min(n, game_.cursor_f + 1); draw(); break;
+        move_cursor(0, 1, n); draw(); break;
     case SDL_CONTROLLER_BUTTON_A:
         pz_place(game_.cursor_r, game_.cursor_f);
         break;
@@ -8490,6 +8503,15 @@ void App::event_loop() {
                     else if (k == SDLK_SPACE) {
                         toggle_draw_mode();
                     }
+                    // R / H / V: rotate the board 90° clockwise, mirror it left-right,
+                    // mirror it top-bottom. View only — game state, moves sent to the
+                    // server and SGFs all stay in true board coordinates.
+                    else if ((k == SDLK_r || k == SDLK_h || k == SDLK_v) && e.key.repeat == 0) {
+                        int& o = renderer_->board_orient;
+                        o = (k == SDLK_r) ? orient_rotate_cw(o)
+                          : (k == SDLK_h) ? orient_flip_h(o) : orient_flip_v(o);
+                        draw();
+                    }
                     // G: guess-the-move quiz over the pro game open for review.
                     else if (k == SDLK_g && e.key.repeat == 0) {
                         toggle_guess_mode();
@@ -8515,8 +8537,7 @@ void App::event_loop() {
                         case SDLK_c:          mapped = SDL_CONTROLLER_BUTTON_X;             break;
                         case SDLK_m:          mapped = SDL_CONTROLLER_BUTTON_Y;             break;
                         case SDLK_s:          mapped = SDL_CONTROLLER_BUTTON_BACK;          break;
-                        case SDLK_r: case SDLK_f:
-                                              mapped = SDL_CONTROLLER_BUTTON_START;         break;
+                        case SDLK_f:          mapped = SDL_CONTROLLER_BUTTON_START;         break;
                         case SDLK_UP:         mapped = SDL_CONTROLLER_BUTTON_DPAD_UP;       break;
                         case SDLK_DOWN:       mapped = SDL_CONTROLLER_BUTTON_DPAD_DOWN;     break;
                         case SDLK_LEFT:       mapped = SDL_CONTROLLER_BUTTON_DPAD_LEFT;     break;
