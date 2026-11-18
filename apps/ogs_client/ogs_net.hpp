@@ -34,6 +34,7 @@ public:
     // Leave a game's live stream (game/disconnect). Clears active_game_id_ if it matched.
     void cmd_disconnect_game(int game_id);
     void cmd_send_resign(int game_id);
+    void cmd_cancel_game(int game_id);   // annul an unstarted game (no-show opponent)
     void cmd_accept_stones(int game_id);
     void cmd_accept_undo(int game_id, int move_number);
     void cmd_reject_undo(int game_id, int move_number);

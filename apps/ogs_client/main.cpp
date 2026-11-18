@@ -594,10 +594,10 @@ private:
     // mode. The single authority on which controls exist — pad navigation and mouse
     // hit-testing both validate against this, so neither can invent a row.
     void match_menu_cols(int out_sizes[3], int& col_count) const {
-        const int DISPLAY_ROWS = 12; // SHOW COORDINATES, ENGINE ANALYSIS, CHAIN LINKS,
+        const int DISPLAY_ROWS = 13; // SHOW COORDINATES, ENGINE ANALYSIS, CHAIN LINKS,
                                      // SQUARE STONES, OCTAGON STONES, SQUARE GRID,
                                      // SHOW TERRITORY, SHOW NEXT MOVE, TETRIS CAPTURES,
-                                     // BOARD HUE, BOARD SAT, BOARD VAL
+                                     // SHOW RANKS, BOARD HUE, BOARD SAT, BOARD VAL
         out_sizes[0] = out_sizes[1] = out_sizes[2] = 0;
         if (match_menu_.ingame) {
             col_count    = 1;
@@ -631,9 +631,9 @@ private:
     // plain-click-raises fallback — the one place that knows which DISPLAY row
     // maps to which Palette setter, so those three input paths can't drift apart.
     void adjust_board_hsv(int row, int delta) {
-        if      (row ==  9) Palette::set_board_hue(Palette::BOARD_HUE + delta);
-        else if (row == 10) Palette::set_board_sat(Palette::BOARD_SAT + delta);
-        else if (row == 11) Palette::set_board_val(Palette::BOARD_VAL + delta);
+        if      (row == 10) Palette::set_board_hue(Palette::BOARD_HUE + delta);
+        else if (row == 11) Palette::set_board_sat(Palette::BOARD_SAT + delta);
+        else if (row == 12) Palette::set_board_val(Palette::BOARD_VAL + delta);
     }
 
     // Move the catalog selection, keep it scrolled into view, and refresh the
@@ -2390,7 +2390,7 @@ void App::handle_controller_button(Uint8 btn) {
         // BOARD HUE/SAT/VAL rows below — a no-op anywhere else in the menu.
         case SDL_CONTROLLER_BUTTON_LEFTSHOULDER:
         case SDL_CONTROLLER_BUTTON_RIGHTSHOULDER: {
-            if (match_menu_.focus_col != display_col || match_menu_.focus_row < 9) break;
+            if (match_menu_.focus_col != display_col || match_menu_.focus_row < 10) break;
             int delta = (btn == SDL_CONTROLLER_BUTTON_RIGHTSHOULDER) ? 5 : -5;
             adjust_board_hsv(match_menu_.focus_row, delta);
             renderer_->draw_match_menu(match_menu_);
@@ -2454,8 +2454,11 @@ void App::handle_controller_button(Uint8 btn) {
                 } else if (r == 8) {
                     match_menu_.tetris_sel = !match_menu_.tetris_sel;
                     tetris_captures_       = match_menu_.tetris_sel;
+                } else if (r == 9) {
+                    match_menu_.show_ranks_sel = !match_menu_.show_ranks_sel;
+                    Renderer::set_show_ranks(match_menu_.show_ranks_sel);
                 } else {
-                    adjust_board_hsv(r, 5);   // rows 9-11; the [-]/[+] buttons handle their own click before reaching here
+                    adjust_board_hsv(r, 5);   // rows 10-12; the [-]/[+] buttons handle their own click before reaching here
                 }
             } else if (match_menu_.focus_col == 0) {
                 if (match_menu_.katago_mode) {
@@ -2510,6 +2513,17 @@ void App::handle_controller_button(Uint8 btn) {
             move_cursor(0, -1, n); draw(); break;
         case SDL_CONTROLLER_BUTTON_DPAD_RIGHT:
             move_cursor(0, 1, n); draw(); break;
+
+        // R1 / L1: rotate the board view 90° clockwise / counter-clockwise (three
+        // clockwise turns). View only, same as the R key.
+        case SDL_CONTROLLER_BUTTON_RIGHTSHOULDER:
+        case SDL_CONTROLLER_BUTTON_LEFTSHOULDER: {
+            int& o = renderer_->board_orient;
+            for (int i = (btn == SDL_CONTROLLER_BUTTON_RIGHTSHOULDER) ? 1 : 3; i > 0; i--)
+                o = orient_rotate_cw(o);
+            draw();
+            break;
+        }
 
         case SDL_CONTROLLER_BUTTON_A:
             if (game_.history_pos >= 0) { game_.history_pos = -1; draw(); break; }  // exit history
@@ -2703,7 +2717,8 @@ void App::handle_controller_button(Uint8 btn) {
                         kata_query_after_ = 0;
                         kata_for(game_.board_size).query_moves(
                             analysis_cur_->board.board, game_.board_size,
-                            analysis_cur_->board.turn_is_black == 1, review_komi_);
+                            analysis_cur_->board.turn_is_black == 1, review_komi_, 200,
+                            analysis_cur_->parent ? analysis_cur_->parent->board.board : nullptr);
                     }
                     draw();
                 }
@@ -2935,6 +2950,16 @@ void App::open_popup_menu() {
             add("BACK TO MY GAMES", [this]() { leave_corr_game(); });
         if (is_local_game_)
             add("UNDO MOVE", [this]() { undo_local_move(); });
+        // Opponent never showed: annul instead of resigning, like the website's
+        // "Cancel game". Offered until both sides have made a first move (free
+        // handicap placements don't count); the server has the final say.
+        if (!is_local_game_ &&
+            game_.last_move_number < 2 + (game_.free_handicap ? game_.handicap : 0))
+            add("CANCEL GAME", [this]() {
+                net_.cmd_cancel_game(game_.game_id);
+                set_status("CANCELLING GAME...");
+                draw();
+            }, /*confirm=*/true);
         add("RESIGN", [this]() { do_resign(); }, /*confirm=*/true);
         add("SETTINGS", [this]() { open_settings_menu(); });
         break;
@@ -4523,6 +4548,7 @@ void App::load_settings() {
         else if (k == "show_territory") show_live_ownership_   = val != 0;
         else if (k == "show_next_move") show_next_move_        = val != 0;
         else if (k == "tetris_captures") tetris_captures_      = val != 0;
+        else if (k == "show_ranks")    Renderer::set_show_ranks(val != 0);
         else if (k == "board_hue")     Palette::set_board_hue(val);
         else if (k == "board_sat")     Palette::set_board_sat(val);
         else if (k == "board_val")     Palette::set_board_val(val);
@@ -4553,6 +4579,7 @@ void App::save_settings() {
     fprintf(f, "show_territory %d\n", show_live_ownership_    ? 1 : 0);
     fprintf(f, "show_next_move %d\n", show_next_move_         ? 1 : 0);
     fprintf(f, "tetris_captures %d\n", tetris_captures_       ? 1 : 0);
+    fprintf(f, "show_ranks %d\n",    Renderer::show_ranks()   ? 1 : 0);
     fprintf(f, "board_hue %d\n",     Palette::BOARD_HUE);
     fprintf(f, "board_sat %d\n",     Palette::BOARD_SAT);
     fprintf(f, "board_val %d\n",     Palette::BOARD_VAL);
@@ -4795,6 +4822,7 @@ void App::open_settings_menu() {
     match_menu_.territory_available = kata_.running() || kata_9_.running();
     match_menu_.next_move_sel   = show_next_move_;
     match_menu_.tetris_sel      = tetris_captures_;
+    match_menu_.show_ranks_sel  = Renderer::show_ranks();
     state_ = AppState::MATCH_MENU;
     renderer_->draw_match_menu(match_menu_);
 }
@@ -6157,8 +6185,8 @@ void App::open_gp_list() {
         std::string genre = e.genre;
         for (char& ch : genre) ch = (char)toupper((unsigned char)ch);
         int id = GP_ID_BASE + e.gp_id;
-        pz_list_.push_back({id, ogs_rank_str(std::max(1, e.level)) + "  " + genre
-                                    + "  (" + std::to_string(e.gp_id) + ")"});
+        std::string rank = Renderer::show_ranks() ? ogs_rank_str(std::max(1, e.level)) + "  " : "";
+        pz_list_.push_back({id, rank + genre + "  (" + std::to_string(e.gp_id) + ")"});
         if (first_open < 0 && !pz_solved_ids_.count(id)) first_open = (int)pz_list_.size() - 1;
     }
     pz_list_title_  = "GOPROBLEMS.COM";
@@ -6323,7 +6351,7 @@ void App::pz_start() {
     black_label_ = game_.black_name;
     white_label_ = game_.white_name;
     state_ = AppState::PUZZLE_PLAY;
-    std::string rank = (pz_.rank > 0) ? "  (" + ogs_rank_str(pz_.rank) + ")" : "";
+    std::string rank = (pz_.rank > 0 && Renderer::show_ranks()) ? "  (" + ogs_rank_str(pz_.rank) + ")" : "";
     set_status("YOU ARE " + std::string(pz_.solver_black ? "BLACK" : "WHITE") + rank);
     // Solver differs from who moves first: the opponent's opening move isn't a
     // real decision point for the human, so it plays itself (same delayed,
@@ -6639,7 +6667,7 @@ void App::pz_return_to_solving() {
     } else {
         pz_banner_.clear();
         pz_comment_ = (pz_node_ && !pz_node_->text.empty()) ? pz_node_->text : pz_.description;
-        std::string rank = (pz_.rank > 0) ? "  (" + ogs_rank_str(pz_.rank) + ")" : "";
+        std::string rank = (pz_.rank > 0 && Renderer::show_ranks()) ? "  (" + ogs_rank_str(pz_.rank) + ")" : "";
         set_status("YOU ARE " + std::string(pz_.solver_black ? "BLACK" : "WHITE") + rank);
     }
     draw();
@@ -6677,7 +6705,7 @@ void App::draw_puzzle_browser() {
         std::map<int, int> solved_per_col = pz_solved_per_collection();
         for (const auto& c : pz_display_cols_) {
             std::string ln = c.name + "  —  " + std::to_string(c.puzzle_count) + " PUZZLES";
-            if (c.min_rank > 0 || c.max_rank > 0)
+            if ((c.min_rank > 0 || c.max_rank > 0) && Renderer::show_ranks())
                 ln += "  " + ogs_rank_str(c.min_rank) + "-" + ogs_rank_str(c.max_rank);
             if (c.rating > 0.f) {
                 char rb[16];
@@ -7307,9 +7335,9 @@ void App::handle_net_msg(const NetMsg& msg) {
         // live — play the board, not the rating — and is revealed at game over.
         black_label_ = msg.black_name;
         white_label_ = msg.white_name;
-        if (msg.my_color == 1 && !msg.black_rank.empty())
+        if (msg.my_color == 1 && !msg.black_rank.empty() && Renderer::show_ranks())
             black_label_ += " [" + msg.black_rank + "]";
-        if (msg.my_color == 0 && !msg.white_rank.empty())
+        if (msg.my_color == 0 && !msg.white_rank.empty() && Renderer::show_ranks())
             white_label_ += " [" + msg.white_rank + "]";
         game_.black_secs        = msg.black_secs;
         game_.white_secs        = msg.white_secs;
@@ -7578,11 +7606,12 @@ void App::handle_net_msg(const NetMsg& msg) {
         close_popup_menu();  // popup items built for PLAYING/STONE_REMOVAL are stale now
         review_komi_ = 7.5f;  // OGS standard komi; not read from server game data here
         game_.result = msg.text;
-        // Game's over — reveal the opponent's rank (hidden during live play)
+        // Game's over — reveal the opponent's rank (hidden during live play),
+        // unless SHOW RANKS is off
         black_label_ = game_.black_name +
-                       (game_.black_rank.empty() ? "" : " [" + game_.black_rank + "]");
+                       (game_.black_rank.empty() || !Renderer::show_ranks() ? "" : " [" + game_.black_rank + "]");
         white_label_ = game_.white_name +
-                       (game_.white_rank.empty() ? "" : " [" + game_.white_rank + "]");
+                       (game_.white_rank.empty() || !Renderer::show_ranks() ? "" : " [" + game_.white_rank + "]");
         save_live_game();
         // Scan for auto study puzzles now that the game is over (positions the
         // background sweep hasn't reached yet get checked as their results arrive)
@@ -7595,7 +7624,9 @@ void App::handle_net_msg(const NetMsg& msg) {
             analysis_cur_ ? analysis_cur_->board.board : game_.board.board,
             game_.board_size,
             analysis_cur_ ? analysis_cur_->board.turn_is_black == 1
-                          : game_.board.turn_is_black == 1);
+                          : game_.board.turn_is_black == 1,
+            7.5f, 200,
+            (analysis_cur_ && analysis_cur_->parent) ? analysis_cur_->parent->board.board : nullptr);
         draw();
         break;
 
@@ -8721,7 +8752,7 @@ void App::event_loop() {
                                 match_menu_.focus_col = c;
                                 match_menu_.focus_row = r;
                                 int dcol = match_menu_.ingame ? 0 : (match_menu_.katago_mode ? -1 : 2);
-                                int zone = (c == dcol && r >= 9)
+                                int zone = (c == dcol && r >= 10)
                                                ? renderer_->match_menu_stepper_zone(
                                                      match_menu_, r, e.button.x, e.button.y)
                                                : -1;
@@ -8871,9 +8902,8 @@ void App::event_loop() {
             if (dx != 0 || dy != 0) {
                 bool changed = (dx != js_dir_x || dy != js_dir_y);
                 if (changed || now >= js_move_next_ms) {
-                    int n = game_.board_size - 1;
-                    game_.cursor_f = std::max(0, std::min(n, game_.cursor_f + dx));
-                    game_.cursor_r = std::max(0, std::min(n, game_.cursor_r + dy));
+                    // Screen direction, like the d-pad, so it follows R/H/V/L1/R1
+                    move_cursor(dy, dx, game_.board_size - 1);
                     js_move_next_ms = now + (changed ? JS_REPEAT_DELAY : JS_REPEAT_RATE);
                 }
             }
@@ -8951,7 +8981,8 @@ void App::event_loop() {
                 fg_kata_pending_  = true;
                 kata_for(game_.board_size).query_moves(
                     analysis_cur_->board.board, game_.board_size,
-                    analysis_cur_->board.turn_is_black == 1, review_komi_);
+                    analysis_cur_->board.turn_is_black == 1, review_komi_, 200,
+                    analysis_cur_->parent ? analysis_cur_->parent->board.board : nullptr);
             }
         }
 
@@ -9016,7 +9047,8 @@ void App::event_loop() {
                 bg_analysis_next_ < (int)game_.history.size()) {
                 const GameState& hs = game_.history[bg_analysis_next_];
                 kata_for(game_.board_size).query_moves(
-                    hs.board, game_.board_size, hs.turn_is_black == 1, review_komi_, 50);
+                    hs.board, game_.board_size, hs.turn_is_black == 1, review_komi_, 50,
+                    bg_analysis_next_ > 0 ? game_.history[bg_analysis_next_ - 1].board : nullptr);
                 bg_analysis_depth_      = bg_analysis_next_++;
                 bg_analysis_busy_       = true;
                 bg_analysis_started_at_ = now;

@@ -36,8 +36,12 @@ public:
 
     // Send a move-suggestion query for the given board position.
     // black_to_play: true if it is Black's turn; max_visits controls analysis depth.
+    // prev_board (optional): the position one move earlier. When board differs from it
+    // by exactly one placed stone, that move is sent as history so KataGo knows the
+    // ko ban — without it, KataGo assumes a just-taken ko can be retaken immediately.
     void query_moves(const char board[][MAX_BOARD_SIZE], int board_size,
-                     bool black_to_play, float komi = 7.5f, int max_visits = 200);
+                     bool black_to_play, float komi = 7.5f, int max_visits = 200,
+                     const char prev_board[][MAX_BOARD_SIZE] = nullptr);
 
     // Returns true if fresh move suggestions are ready; copies up to MAX_SUGGESTIONS
     // entries into out[] and sets count_out. score_lead_out receives KataGo's

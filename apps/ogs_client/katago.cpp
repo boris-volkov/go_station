@@ -246,15 +246,31 @@ void KatagoProc::query_ownership(const char  board[][MAX_BOARD_SIZE], int board_
 // ── Move-suggestion query ─────────────────────────────────────────────────────
 
 void KatagoProc::query_moves(const char board[][MAX_BOARD_SIZE], int board_size,
-                              bool black_to_play, float komi, int max_visits) {
+                              bool black_to_play, float komi, int max_visits,
+                              const char prev_board[][MAX_BOARD_SIZE]) {
     if (!running_.load()) { kata_log("query_moves: process not running — skipped"); return; }
+
+    // Find the move that led here: the only point empty before and occupied now
+    // (captures only ever empty points). It must be the opponent's stone; anything
+    // else (a pass, setup edits) falls back to a bare position with no ko ban.
+    int mv_r = -1, mv_c = -1;
+    if (prev_board) {
+        int placed = 0;
+        for (int r = 0; r < board_size; r++)
+            for (int c = 0; c < board_size; c++)
+                if (prev_board[r][c] == 0 && board[r][c] != 0) { mv_r = r; mv_c = c; placed++; }
+        if (placed != 1 || board[mv_r][mv_c] != (black_to_play ? 2 : 1)) mv_r = mv_c = -1;
+    }
+    auto base = (mv_r >= 0) ? prev_board : board;
 
     json stones = json::array();
     for (int r = 0; r < board_size; r++)
         for (int c = 0; c < board_size; c++) {
-            if (board[r][c] == 0) continue;
-            stones.push_back({ board[r][c] == 1 ? "B" : "W", to_gtp(r, c, board_size) });
+            if (base[r][c] == 0) continue;
+            stones.push_back({ base[r][c] == 1 ? "B" : "W", to_gtp(r, c, board_size) });
         }
+    json moves = json::array();
+    if (mv_r >= 0) moves.push_back({ black_to_play ? "W" : "B", to_gtp(mv_r, mv_c, board_size) });
 
     int qid;
     {
@@ -268,15 +284,16 @@ void KatagoProc::query_moves(const char board[][MAX_BOARD_SIZE], int board_size,
 
     json q = {
         {"id",             std::to_string(qid)},
-        {"moves",          json::array()},
+        {"moves",          moves},
         {"initialStones",  stones},
-        {"initialPlayer",  black_to_play ? "B" : "W"},
+        // initialPlayer is whoever plays moves[0] — the opponent when there's a last move
+        {"initialPlayer",  (black_to_play == moves.empty()) ? "B" : "W"},
         {"rules",          "chinese"},
         {"komi",           komi},
         {"boardXSize",     board_size},
         {"boardYSize",     board_size},
         {"maxVisits",      max_visits},
-        {"analyzeTurns",   {0}}
+        {"analyzeTurns",   {(int)moves.size()}}
         // NOTE: no "includePV" field — KataGo's analysis engine already includes a
         // "pv" array in every moveInfo by default; this key isn't a real query field
         // and previously just triggered a "do you have a typo?" warning on every query.

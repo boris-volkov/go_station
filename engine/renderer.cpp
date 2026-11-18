@@ -197,6 +197,13 @@ static PadStyle g_pad_style = PadStyle::PlayStation;
 void     Renderer::set_pad_style(PadStyle s) { g_pad_style = s; }
 PadStyle Renderer::pad_style()               { return g_pad_style; }
 
+// Player/puzzle ranks ("5k", "3d") shown next to names. File scope for the same
+// reason as g_pad_style: the catalog draws them here, the app formats its own.
+static bool g_show_ranks = true;
+
+void Renderer::set_show_ranks(bool on) { g_show_ranks = on; }
+bool Renderer::show_ranks()            { return g_show_ranks; }
+
 static const char* keyboard_face_key(char c) {
     if (g_pad_style != PadStyle::Keyboard) return nullptr;
     switch (c) {
@@ -1543,9 +1550,10 @@ void Renderer::draw_match_menu(const MatchMenu& menu) {
     static const char* str_labels[8]   = {
         "20 KYU", "15 KYU", "10 KYU", "5 KYU", "1 KYU", "1 DAN", "5 DAN", "9 DAN"
     };
-    static const char* display_labels[9] = {"SHOW COORDINATES", "ENGINE ANALYSIS", "CHAIN LINKS",
-                                            "SQUARE STONES", "OCTAGON STONES", "SQUARE GRID",
-                                            "SHOW TERRITORY", "SHOW NEXT MOVE", "TETRIS CAPTURES"};
+    static const char* display_labels[10] = {"SHOW COORDINATES", "ENGINE ANALYSIS", "CHAIN LINKS",
+                                             "SQUARE STONES", "OCTAGON STONES", "SQUARE GRID",
+                                             "SHOW TERRITORY", "SHOW NEXT MOVE", "TETRIS CAPTURES",
+                                             "SHOW RANKS"};
 
     // Column headers all sit on the same line, one row above their column's first
     // control — col_ty already points past them (see match_menu_layout).
@@ -1627,6 +1635,7 @@ void Renderer::draw_match_menu(const MatchMenu& menu) {
         draw_check(display_col, 6, display_labels[6], menu.territory_sel, !menu.territory_available);
         draw_check(display_col, 7, display_labels[7], menu.next_move_sel);
         draw_check(display_col, 8, display_labels[8], menu.tetris_sel);
+        draw_check(display_col, 9, display_labels[9], menu.show_ranks_sel);
 
         // Board colour: HUE/SAT/VAL as a bracketed number in the same slot draw_check
         // uses for [X]/[ ], followed by dedicated [-]/[+] buttons — a mouse-clickable
@@ -1653,14 +1662,14 @@ void Renderer::draw_match_menu(const MatchMenu& menu) {
             draw_text(px, y, scale, "[+]", focused ? Palette::ACCENT : Palette::TEXT_WHITE);
             stepper_bx = bx;
         };
-        draw_stepper(9,  "BOARD HUE", Palette::BOARD_HUE);
-        draw_stepper(10, "BOARD SAT", Palette::BOARD_SAT);
-        draw_stepper(11, "BOARD VAL", Palette::BOARD_VAL);
+        draw_stepper(10, "BOARD HUE", Palette::BOARD_HUE);
+        draw_stepper(11, "BOARD SAT", Palette::BOARD_SAT);
+        draw_stepper(12, "BOARD VAL", Palette::BOARD_VAL);
 
         int stepper_px = stepper_bx + text_width_px("[-]", scale) + scale * 3;   // [+] start, same formula as draw_stepper
         int swatch_x    = stepper_px + text_width_px("[+]", scale) + scale * 6;
-        int swatch_top  = col_ty[display_col] + 9 * line_h;
-        int swatch_size = 2 * line_h + th;   // spans row 9's top to row 11's text bottom
+        int swatch_top  = col_ty[display_col] + 10 * line_h;
+        int swatch_size = 2 * line_h + th;   // spans row 10's top to row 12's text bottom
         draw_color_swatch(swatch_x, swatch_top, swatch_size, Palette::BOARD, Palette::TEXT_DIM);
     }
 
@@ -1709,11 +1718,11 @@ void Renderer::draw_match_menu(const MatchMenu& menu) {
         int block_h  = (max_rows + 1) * line_h + line_gap * 2;  // +1 for column headers
         int cy_top   = sh - block_h - hpad / 2;
 
-        // Longest option column above is DISPLAY (header + 12 rows: 9 toggles plus
+        // Longest option column above is DISPLAY (header + 13 rows: 10 toggles plus
         // the board HUE/SAT/VAL steppers) — must track DISPLAY_ROWS in main.cpp's
         // match_menu_cols(). Skip the reference entirely rather than draw over it
         // when the window is too short.
-        int options_bottom = ty + (line_h + line_gap) + 12 * line_h + line_gap * 2;
+        int options_bottom = ty + (line_h + line_gap) + 13 * line_h + line_gap * 2;
         if (cy_top < options_bottom) { SDL_RenderPresent(sdl); return; }
 
         SDL_Color col_header = {160, 160, 160, 255};
@@ -2118,10 +2127,11 @@ Renderer::CatalogLayout Renderer::catalog_layout(const BoardView& view, const Ca
     // --- Measure list width and black-column width for aligned player names ---
     char lbl[1024];
     // Player rank is only ever interesting outside of live play (catalog review
-    // has no "in-progress game" to protect), so this always includes it.
+    // has no "in-progress game" to protect), so this includes it unless the
+    // SHOW RANKS setting is off.
     auto name_rank = [](const std::string& name, const std::string& rank) -> std::string {
         std::string n = name.empty() ? "?" : name;
-        if (!rank.empty()) n += " [" + rank + "]";
+        if (!rank.empty() && g_show_ranks) n += " [" + rank + "]";
         return n;
     };
     L.vs_w    = text_width_px("vs", L.scale);
@@ -2250,7 +2260,7 @@ void Renderer::render_catalog_overlay(const BoardView& view, const DrawState& ds
     char lbl[1024];
     auto name_rank = [](const std::string& name, const std::string& rank) -> std::string {
         std::string n = name.empty() ? "?" : name;
-        if (!rank.empty()) n += " [" + rank + "]";
+        if (!rank.empty() && g_show_ranks) n += " [" + rank + "]";
         return n;
     };
     int max_black_w = L.max_black_w, col_gap = L.col_gap, vs_w = L.vs_w;

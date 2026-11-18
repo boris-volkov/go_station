@@ -314,6 +314,7 @@ public:
         bool territory_available = true; // false = no KataGo process running — greyed out, inert
         bool next_move_sel   = false; // mirrors App::show_next_move_ (yellow actual-move ring in review)
         bool tetris_sel      = false; // mirrors App::tetris_captures_ (blink-and-vanish capture animation)
+        bool show_ranks_sel  = true;  // mirrors Renderer::show_ranks() (player/puzzle ranks next to names)
         bool ingame       = false; // opened mid-game — hide search/mode controls, board
                                    // size/speed shown read-only for reference only
     };
@@ -507,6 +508,10 @@ public:
     // (L1, R2, OPT, SHARE, L3...) to the current pad style's names. Face-button
     // glyphs (~ @ # ^) are untouched — draw_text themes those as it renders.
     static std::string themed_labels(const char* tmpl);
+    // Whether ranks ("5k", "3d") appear next to player names and puzzles — the
+    // DISPLAY column's SHOW RANKS toggle. Global for the same reason as pad style.
+    static void set_show_ranks(bool on);
+    static bool show_ranks();
     // 5x7 bitmap for a character (public so the face-button glyph helper can reuse
     // letter glyphs for Xbox/Nintendo button symbols).
     static const unsigned char* get_glyph_rows(char c);

@@ -683,6 +683,14 @@ void OgsNet::cmd_send_resign(int game_id) {
     enqueue_event("game/resign", payload.dump());
 }
 
+void OgsNet::cmd_cancel_game(int game_id) {
+    // Same as the website's "Cancel game": only allowed in the opening moves (the
+    // server refuses it later), and the game ends with no result — RE[Void].
+    json payload = {{"game_id", game_id}, {"player_id", my_player_id}};
+    net_log(("cmd_cancel_game: " + std::to_string(game_id)).c_str());
+    enqueue_event("game/cancel", payload.dump());
+}
+
 void OgsNet::cmd_accept_stones(int game_id) {
     // Payload/event name per the real client (goban's OGSConnectivity.acceptRemovedStones):
     // no player_id, no all_removed — just game_id/stones/strict_seki_mode on "game/removed_stones/accept".
@@ -1225,7 +1233,9 @@ void OgsNet::on_event(const std::string& name, const std::string& payload_json) 
                 int winner_id = d.value("winner", 0);
                 bool i_won = (winner_id == my_player_id);
                 // outcome is e.g. "Resignation", "5.5", "Timeout", etc.
-                game_result_ = (i_won ? "YOU WON by " : "YOU LOST by ") + outcome;
+                // A cancelled game has no winner — don't report it as a loss.
+                game_result_ = (outcome == "Cancellation") ? std::string("GAME CANCELLED")
+                             : (i_won ? "YOU WON by " : "YOU LOST by ") + outcome;
                 net_log(("gamedata result=" + game_result_).c_str());
             }
 
