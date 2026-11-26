@@ -1,4 +1,4 @@
-go_viewer_index_v2	257
+go_viewer_index_v2	274
 2026.09.05 02.40 boris volkov vs vignesh kalidas.sgf	boris volkov	vignesh kalidas	2026.09.05		17K	15K
 20260628-boris-volkov-AG_Park.sgf	boris-volkov	AG Park	2026-06-28	B+R	22k	17k
 20260628-boris-volkov-Acetone.sgf	boris-volkov	Acetone	2026-06-28	W+16.5	21k	20k
@@ -101,6 +101,15 @@ go_viewer_index_v2	257
 20261117-boris-volkov-Sae_Ngow.sgf	boris-volkov	Sae Ngow	2026-11-17	W+17.5	14k	11k
 20261117-boris-volkov-nobleman.sgf	boris-volkov	nobleman	2026-11-17	W+R	13k	11k
 20261117-boris-volkov-sidorovdviii.sgf	boris-volkov	sidorov.dviii	2026-11-17	W+9.5	14k	10k
+20261118-boris-volkov-gjpark882.sgf	boris-volkov	gjpark882	2026-11-18	B+R	16k	14k
+20261118-boris-volkov-pilwon1941.sgf	boris-volkov	pilwon1941	2026-11-18	B+T	16k	14k
+20261122-boris-volkov-.sgf	boris-volkov	永蓝叫共九逃	2026-11-23	B+16.5	15k	13k
+20261122-boris-volkov-philippedlp1.sgf	boris-volkov	philippe.dlp1	2026-11-23	W+R	15k	13k
+20261122-boris-volkov-shon_33.sgf	boris-volkov	shon_33	2026-11-23	W+R	15k	15k
+20261123-boris-volkov-Ayanni2016.sgf	boris-volkov	Ayanni2016	2026-11-24	W+6.5	16k	13k
+20261123-boris-volkov-Maclin.sgf	boris-volkov	Maclin	2026-11-24	W+2.5	15k	14k
+20261123-boris-volkov-gghf26k.sgf	boris-volkov	gghf26k	2026-11-24	B+0.5	16k	15k
+20261123-boris-volkov-mdavi109.sgf	boris-volkov	mdavi109	2026-11-24	W+R	16k	14k
 88401355-219-???-boris-volkov.sgf						
 89200849-259-boris-volkov-phillydude.sgf	phillydude	boris-volkov	2026-07-28	B+23.5	19k	17k
 89201216-089-thejordan-boris-volkov.sgf	boris-volkov	thejordan	2026-07-28	W+R	18k	18k
@@ -256,3 +265,11 @@ puzzles\20261104-225542-Snake24-move79.sgf	Snake24	boris-volkov	2026-11-04
 puzzles\20261104-231544-1achimmohn-move90.sgf	boris-volkov	1.achimmohn	2026-11-04			
 puzzles\20261105-011136-phuocn8n1-move161.sgf	phuocn8n1	boris-volkov	2026-11-05			
 puzzles\20261105-012036-gomoon68-move93.sgf	gomoon68	boris-volkov	2026-11-05			
+puzzles\20261118-091355-pilwon1941-move89.sgf	boris-volkov	pilwon1941	2026-11-18			
+puzzles\20261122-222548--move154.sgf	boris-volkov	永蓝叫共九逃	2026-11-22			
+puzzles\20261122-222548--move156.sgf	boris-volkov	永蓝叫共九逃	2026-11-22			
+puzzles\20261123-204349-gghf26k-move116.sgf	boris-volkov	gghf26k	2026-11-23			
+puzzles\20261123-204349-gghf26k-move118.sgf	boris-volkov	gghf26k	2026-11-23			
+puzzles\20261123-204349-gghf26k-move120.sgf	boris-volkov	gghf26k	2026-11-23			
+puzzles\20261123-204349-gghf26k-move122.sgf	boris-volkov	gghf26k	2026-11-23			
+puzzles\20261123-204349-gghf26k-move124.sgf	boris-volkov	gghf26k	2026-11-23			
