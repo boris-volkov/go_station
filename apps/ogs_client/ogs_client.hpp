@@ -58,6 +58,8 @@ enum class NetMsgType {
     STONE_REMOVAL,   // game entered stone removal phase; text holds server's dead-stone payload
     GAME_OVER,       // phase changed to "finished"; text holds the result string
     UNDO_REQUESTED,  // opponent requested undo; undo_move_number holds the move to undo
+    UNDO_ACCEPTED,   // an undo (either side's) went through; the board must be rebuilt
+    UNDO_CANCELED,   // the pending undo request was withdrawn or declined
     RESUME_PLAY,     // stone removal cancelled; game returned to play phase
     DISCONNECTED,    // connection lost unexpectedly; the net thread is already retrying
     RECONNECTED,     // socket is back up; a live game's GAME_CONNECTED rebuild follows

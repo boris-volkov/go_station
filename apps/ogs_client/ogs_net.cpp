@@ -718,6 +718,22 @@ void OgsNet::cmd_reject_undo(int game_id, int move_number) {
     enqueue_event("game/undo/cancel", dump);
 }
 
+void OgsNet::cmd_request_undo(int game_id, int move_number) {
+    json payload = {{"game_id", game_id}, {"move_number", move_number}};
+    std::string dump = payload.dump();
+    net_log(("cmd_request_undo: " + dump).c_str());
+    enqueue_event("game/undo/request", dump);
+}
+
+void OgsNet::cmd_reject_stones(int game_id) {
+    // The website's "Cancel and resume game": the server drops the marking and
+    // returns the game to the play phase (we see it as /phase=play → RESUME_PLAY).
+    json payload = {{"game_id", game_id}};
+    std::string dump = payload.dump();
+    net_log(("cmd_reject_stones: " + dump).c_str());
+    enqueue_event("game/removed_stones/reject", dump);
+}
+
 void OgsNet::log_line(const std::string& s) {
     net_log(s.c_str());
 }
@@ -1416,6 +1432,20 @@ void OgsNet::on_event(const std::string& name, const std::string& payload_json) 
                 push_msg(std::move(m));
             }
         } catch (...) {}
+        return;
+    }
+
+    // ---------- undo resolved ----------
+    // Payloads seen so far are a bare move number ("undo_canceled 80"); nothing in
+    // them is needed — an accepted undo is rebuilt from a fresh gamedata, which also
+    // covers multi-move undos (undo_move_count 2).
+    bool undo_accepted = name.size() > 14 && name.substr(name.size() - 14) == "/undo_accepted";
+    bool undo_canceled = name.size() > 14 && name.substr(name.size() - 14) == "/undo_canceled";
+    if (undo_accepted || undo_canceled) {
+        NetMsg m;
+        m.type    = undo_accepted ? NetMsgType::UNDO_ACCEPTED : NetMsgType::UNDO_CANCELED;
+        m.game_id = active_game_id_;
+        push_msg(std::move(m));
         return;
     }
 }

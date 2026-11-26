@@ -38,6 +38,8 @@ public:
     void cmd_accept_stones(int game_id);
     void cmd_accept_undo(int game_id, int move_number);
     void cmd_reject_undo(int game_id, int move_number);
+    void cmd_request_undo(int game_id, int move_number);  // undo our last move (move_number)
+    void cmd_reject_stones(int game_id);  // refuse the dead-stone marking — back to play
 
     // Poll one inbound message (returns false when queue is empty).
     bool poll_msg(NetMsg& out);

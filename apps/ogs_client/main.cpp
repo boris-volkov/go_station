@@ -858,14 +858,30 @@ private:
     void do_resign();
     void return_to_lobby();
     void accept_stone_removal();
+    void resume_play_from_scoring();   // refuse the marking — the game goes back to play
+    void request_undo();
 
     // Last-played stone position (for row/col crosshair highlight)
     int last_move_r_ = -1;
     int last_move_f_ = -1;
 
     // Undo-request state
-    bool undo_pending_     = false;
+    bool undo_pending_     = false;   // the opponent asked; waiting on our answer
     int  undo_move_number_ = 0;
+    bool my_undo_requested_ = false;  // we asked; waiting on theirs
+
+    // Score check: KataGo's independent read of the final position, so a marking
+    // that costs us points (the opponent marking their own dead group alive, or a
+    // live group of ours dead) can't be accepted by an absent-minded press of X.
+    // KataGo ownership is per point: +1 black, -1 white, 0 unsettled.
+    bool   score_check_pending_  = false;
+    Uint32 score_check_started_  = 0;
+    bool   score_check_have_     = false;
+    int    score_kata_own_[MAX_BOARD_SIZE][MAX_BOARD_SIZE] = {};
+    int    score_disputed_       = -1;   // -1 unchecked, 0 agrees, N = stones against us
+    bool   score_unchecked_confirm_ = false;   // second X needed to accept unchecked
+    void start_score_check();
+    void evaluate_score_dispute();
 
     // Stone removal: true once OGS has sent territory data; prevents KataGo from overwriting it
     bool stone_removal_has_ogs_territory_ = false;
@@ -2225,19 +2241,15 @@ void App::handle_controller_button(Uint8 btn) {
     // Undo request from opponent: A = accept, B or START = deny
     if (undo_pending_ && state_ == AppState::PLAYING) {
         if (btn == SDL_CONTROLLER_BUTTON_A) {
+            // Don't roll the board back here: popping one snapshot left
+            // last_move_number pointing at the undone move, so the next real move
+            // (which reuses that number) was dropped as a duplicate, and a two-move
+            // undo was only half applied. The server's undo_accepted triggers a full
+            // rebuild instead (UNDO_ACCEPTED).
             undo_pending_ = false;
             net_.cmd_accept_undo(game_.game_id, undo_move_number_);
-            if ((int)game_.history.size() > 1) {
-                game_.history.pop_back();
-                game_.board = game_.history.back();
-            }
-            game_.history_pos = -1;
-            game_.pending_col = -2;
-            game_.pending_row = -2;
-            pass_confirm_    = false;
-            bool btp = (game_.board.turn_is_black == 1);
-            game_.my_turn = (btp && game_.my_color == 1) || (!btp && game_.my_color == 0);
-            set_status(game_.my_turn ? "YOUR TURN" : "WAITING...");
+            pass_confirm_ = false;
+            set_status("UNDOING...");
         } else if (btn == SDL_CONTROLLER_BUTTON_B || btn == SDL_CONTROLLER_BUTTON_START) {
             undo_pending_ = false;
             net_.cmd_reject_undo(game_.game_id, undo_move_number_);
@@ -2619,8 +2631,28 @@ void App::handle_controller_button(Uint8 btn) {
     if (state_ == AppState::STONE_REMOVAL) {
         if (btn == SDL_CONTROLLER_BUTTON_START)
             open_popup_menu();
-        else if (btn == SDL_CONTROLLER_BUTTON_A)
-            accept_stone_removal();
+        else if (btn == SDL_CONTROLLER_BUTTON_A) {
+            // Disputed marking: X keeps playing instead of agreeing to it. Accepting
+            // anyway is only in the menu, behind a confirm.
+            if (is_local_game_ || score_disputed_ == 0) {
+                accept_stone_removal();
+            } else if (score_disputed_ > 0) {
+                resume_play_from_scoring();
+            } else if (score_check_pending_) {
+                flash_       = "CHECKING THE SCORE...";
+                flash_until_ = SDL_GetTicks() + 1500;
+                draw();
+            } else if (!score_unchecked_confirm_) {
+                // No KataGo to check against: accepting takes a second press.
+                score_unchecked_confirm_ = true;
+                flash_       = "SCORE NOT CHECKED - PRESS " GLYPH_PS_CROSS " AGAIN TO ACCEPT";
+                flash_until_ = SDL_GetTicks() + 3000;
+                draw();
+            } else {
+                score_unchecked_confirm_ = false;
+                accept_stone_removal();
+            }
+        }
         else if (btn == SDL_CONTROLLER_BUTTON_Y) {
             stone_removal_fill_view_ = !stone_removal_fill_view_;
             draw();
@@ -2960,14 +2992,27 @@ void App::open_popup_menu() {
                 set_status("CANCELLING GAME...");
                 draw();
             }, /*confirm=*/true);
+        // Take back our last move: only while it's the opponent's turn and the move
+        // hasn't been answered yet (OGS asks the opponent, who may decline).
+        if (!is_local_game_ && !game_.my_turn && game_.last_move_number > 0 &&
+            !my_undo_requested_)
+            add("REQUEST UNDO", [this]() { request_undo(); });
         add("RESIGN", [this]() { do_resign(); }, /*confirm=*/true);
         add("SETTINGS", [this]() { open_settings_menu(); });
         break;
 
     case AppState::STONE_REMOVAL:
         popup_title_ = "SCORING";
-        add(is_local_game_ ? "SHOW RESULT" : "ACCEPT SCORE",
-            [this]() { accept_stone_removal(); });
+        if (is_local_game_)
+            add("SHOW RESULT", [this]() { accept_stone_removal(); });
+        else if (score_disputed_ > 0)
+            // KataGo says this marking costs us points — agreeing takes a confirm.
+            add("ACCEPT ANYWAY", [this]() { accept_stone_removal(); }, /*confirm=*/true);
+        else
+            add("ACCEPT SCORE", [this]() { accept_stone_removal(); },
+                /*confirm=*/score_disputed_ < 0);
+        if (!is_local_game_)
+            add("RESUME PLAY", [this]() { resume_play_from_scoring(); });
         add(stone_removal_fill_view_ ? "SHOW TERRITORY SQUARES" : "FILL TERRITORY WITH STONES",
             [this]() { stone_removal_fill_view_ = !stone_removal_fill_view_; });
         add("SETTINGS", [this]() { open_settings_menu(); });
@@ -3205,6 +3250,67 @@ void App::accept_stone_removal() {
     accept_resend_at_ = SDL_GetTicks() + 6000;
     set_status("ACCEPTING... WAITING FOR OPPONENT");
     draw();
+}
+
+void App::resume_play_from_scoring() {
+    if (is_local_game_) return;
+    my_accept_sent_ = false;   // stop the accept re-send loop
+    net_.cmd_reject_stones(game_.game_id);
+    set_status("RESUMING PLAY...");   // RESUME_PLAY lands when the server agrees
+    draw();
+}
+
+void App::request_undo() {
+    if (is_local_game_ || game_.my_turn || game_.last_move_number <= 0) return;
+    net_.cmd_request_undo(game_.game_id, game_.last_move_number);
+    my_undo_requested_ = true;
+    set_status("UNDO REQUESTED - WAITING FOR OPPONENT");
+    draw();
+}
+
+// Ask KataGo who owns each point of the final position, with no stones marked
+// dead, once per scoring phase (the board can't change during it). The answer is
+// compared against every marking the server sends — see evaluate_score_dispute().
+void App::start_score_check() {
+    if (is_local_game_ || score_check_have_ || score_check_pending_) return;
+    KatagoProc& kp = kata_for(game_.board_size);
+    if (!kp.running()) { score_disputed_ = -1; return; }   // unchecked — X needs a confirm
+    bg_analysis_busy_ = false;   // KataGo answers one query at a time; this one wins
+    live_own_pending_ = false;
+    bool no_dead[MAX_BOARD_SIZE][MAX_BOARD_SIZE] = {};
+    kp.query_ownership(game_.board.board, game_.board_size, no_dead, 7.5f, 200);
+    score_check_pending_ = true;
+    score_check_started_ = SDL_GetTicks();
+}
+
+// A marking is disputed when it differs from KataGo's read in a way that costs
+// us: an opponent stone KataGo calls dead left on the board, or one of our stones
+// KataGo calls alive marked dead. Points KataGo calls unsettled never count, and
+// neither do mistakes in our favour — accepting those can't hurt.
+void App::evaluate_score_dispute() {
+    if (!score_check_have_) return;
+    const char mine = (game_.my_color == 1) ? 1 : 2;
+    int against = 0;
+    for (int r = 0; r < game_.board_size; r++)
+        for (int f = 0; f < game_.board_size; f++) {
+            char c = game_.board.board[r][f];
+            if (c == 0) continue;
+            int own = score_kata_own_[r][f];
+            bool kata_dead  = (c == 1) ? own < 0 : own > 0;
+            bool kata_alive = (c == 1) ? own > 0 : own < 0;
+            bool marked     = game_.dead_stones[r][f];
+            if (c != mine && kata_dead && !marked) against++;
+            if (c == mine && kata_alive && marked) against++;
+        }
+    score_disputed_ = against;
+    // my_accept_sent_ here means this exact marking was accepted on purpose (ACCEPT
+    // ANYWAY) — a changed marking already cleared it in the STONE_REMOVAL handler.
+    if (my_accept_sent_) return;
+    if (against > 0) {
+        set_status("SCORE DISPUTED (" + std::to_string(against) + " STONES) - " GLYPH_PS_CROSS "=KEEP PLAYING");
+    } else if (stone_removal_has_ogs_territory_) {
+        set_status("SCORE CHECKED - PRESS " GLYPH_PS_CROSS " TO ACCEPT");
+    }
 }
 
 void App::return_to_lobby() {
@@ -7323,6 +7429,12 @@ void App::handle_net_msg(const NetMsg& msg) {
         live_own_pending_     = false;
         live_own_query_after_ = 0;
         kata_score_lead_      = FLT_MAX;  // stale score from a previous game/analysis
+        // Fresh gamedata (a new game, a resync, or the rebuild after an undo):
+        // any undo request has been resolved, and a scoring phase starts over.
+        undo_pending_        = false;
+        my_undo_requested_   = false;
+        score_check_pending_ = score_check_have_ = false;
+        score_disputed_      = -1;
         game_.game_id      = msg.game_id;
         game_.board_size   = msg.board_size;
         game_.my_color     = msg.my_color;
@@ -7522,6 +7634,10 @@ void App::handle_net_msg(const NetMsg& msg) {
                 game_.my_turn = (next_is_black == (game_.my_color == 1));
             }
             pass_confirm_ = false;
+            // A new move answers any undo request still open (OGS drops it too) —
+            // otherwise the stale prompt would keep grabbing X from the next move.
+            undo_pending_      = false;
+            my_undo_requested_ = false;
             game_.turn_mismatch_at = 0;   // board and server just agreed again
             set_status(game_.my_turn ? "YOUR TURN" : "WAITING...");
             // A move was just played: both byo-yomi countdowns start a fresh
@@ -7597,6 +7713,16 @@ void App::handle_net_msg(const NetMsg& msg) {
                            : "WAITING FOR SERVER SCORE...");
         }
         stone_removal_all_removed_ = msg.text;
+        // Check every marking the server sends against KataGo's own read — the
+        // opponent can change it at any point before both sides accept.
+        score_unchecked_confirm_ = false;
+        if (!is_local_game_) {
+            start_score_check();
+            if (score_check_have_)
+                evaluate_score_dispute();
+            else if (score_check_pending_ && !my_accept_sent_)
+                set_status("CHECKING THE SCORE...");
+        }
         draw();
         break;
     }
@@ -7638,6 +7764,31 @@ void App::handle_net_msg(const NetMsg& msg) {
         }
         break;
 
+    case NetMsgType::UNDO_ACCEPTED:
+        // Either side's undo went through. Rebuild from fresh gamedata rather than
+        // popping moves locally — it handles multi-move undos and re-anchors the
+        // move numbering the live move handler checks against.
+        if (is_local_game_ || msg.game_id != game_.game_id) break;
+        undo_pending_      = false;
+        my_undo_requested_ = false;
+        flash_       = "MOVE UNDONE";
+        flash_until_ = SDL_GetTicks() + 2000;
+        game_.resync_req_at = 0;   // bypass the resync debounce — this one is expected
+        request_resync();
+        break;
+
+    case NetMsgType::UNDO_CANCELED:
+        if (is_local_game_ || msg.game_id != game_.game_id) break;
+        if (my_undo_requested_) {
+            flash_       = "UNDO DECLINED";
+            flash_until_ = SDL_GetTicks() + 2000;
+            set_status(game_.my_turn ? "YOUR TURN" : "WAITING...");
+        }
+        undo_pending_      = false;
+        my_undo_requested_ = false;
+        draw();
+        break;
+
     case NetMsgType::RESUME_PLAY:
         if (state_ == AppState::STONE_REMOVAL || state_ == AppState::PLAYING) {
             stone_removal_has_ogs_territory_ = false;
@@ -7649,7 +7800,11 @@ void App::handle_net_msg(const NetMsg& msg) {
             memset(game_.ownership,   0, sizeof(game_.ownership));
             game_.history_pos = -1;
             undo_pending_     = false;
+            my_undo_requested_ = false;
             pass_confirm_     = false;
+            // The next scoring phase is judged afresh — play may change the position
+            score_check_pending_ = score_check_have_ = false;
+            score_disputed_      = -1;
             close_popup_menu();  // a SCORING popup is stale once play resumes
             // If we had a pending pass that the server rejected (phase reverted to play),
             // undo the optimistic turn flip and the history snapshot apply_pass() recorded
@@ -8294,7 +8449,15 @@ void App::event_loop() {
                         if (state_ == AppState::STONE_REMOVAL) {
                             int kata_own[MAX_BOARD_SIZE][MAX_BOARD_SIZE];
                             int bs = 0;
-                            if (kp->poll_ownership(kata_own, bs) && !stone_removal_has_ogs_territory_) {
+                            bool got = kp->poll_ownership(kata_own, bs);
+                            if (got && score_check_pending_ && bs == game_.board_size) {
+                                score_check_pending_ = false;
+                                score_check_have_    = true;
+                                memcpy(score_kata_own_, kata_own, sizeof(score_kata_own_));
+                                evaluate_score_dispute();
+                                draw();
+                            }
+                            if (got && !stone_removal_has_ogs_territory_) {
                                 for (int r = 0; r < bs; r++)
                                     for (int f = 0; f < bs; f++)
                                         game_.ownership[r][f] = kata_own[r][f];
@@ -8995,6 +9158,16 @@ void App::event_loop() {
         // Live territory overlay: same lost-response protection as bg_analysis_busy_
         if (live_own_pending_ && now - live_own_started_at_ > 15000) {
             live_own_pending_ = false;
+        }
+        // Score check that never came back: fall back to an unchecked accept
+        // (X twice) rather than leaving scoring stuck on "CHECKING THE SCORE...".
+        if (score_check_pending_ && now - score_check_started_ > 15000) {
+            score_check_pending_ = false;
+            score_disputed_      = -1;
+            if (state_ == AppState::STONE_REMOVAL && !my_accept_sent_) {
+                set_status("SCORE NOT CHECKED - PRESS " GLYPH_PS_CROSS " TWICE TO ACCEPT");
+                draw();
+            }
         }
 
         // Fire deferred live-ownership query once the board has settled
