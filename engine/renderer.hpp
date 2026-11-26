@@ -187,6 +187,10 @@ public:
         const char (*catalog_thumb_open) [BOARD_SIZE] = nullptr;
         const char (*catalog_thumb_final)[BOARD_SIZE] = nullptr;
         int         catalog_thumb_board_size  = BOARD_SIZE;
+        // Final position of the game under review, drawn as a thumbnail in the
+        // right gutter between the two player labels. nullptr = no thumbnail.
+        // Board size is active_board_size; orientation follows the main board.
+        const char (*end_thumb)[MAX_BOARD_SIZE] = nullptr;
         // Transient flash notification (e.g. save confirmation)
         const std::string& flash_message;
         Uint32 flash_message_until = 0;
@@ -413,6 +417,9 @@ public:
     int  capture_anim_wait_ms() const;
     // Public: also used standalone by ogs_client's drill-list preview
     void render_mini_board(int x, int y, int size, const char board[][BOARD_SIZE], int board_size = BOARD_SIZE);
+    // Same, for a full-width game board, displayed under an ORIENT_* orientation
+    void render_mini_board(int x, int y, int size, const char board[][MAX_BOARD_SIZE],
+                           int board_size, int orient);
 
 private:
     // Geometry of the popup panel, derived once and shared by draw_popup_menu and
@@ -522,6 +529,8 @@ private:
     void render_all_shadows(const BoardView& view, const char board[][MAX_BOARD_SIZE], bool chain_mode, int stone_filter, int n);
     void render_liberties(const BoardView& view, const int lib_r[], const int lib_f[], int lib_count);
     void render_player_labels(const BoardView& view, const DrawState& ds);
+    template <int N>
+    void mini_board_impl(int x, int y, int size, const char (*board)[N], int board_size, int orient);
     void render_speed_label(const BoardView& view, int delay_ms, Uint32 until);
     void render_guess_score(const BoardView& view, const DrawState& ds);
     void render_mode_status(const BoardView& view, bool analysis_mode, bool game_mode, bool guess_mode, bool territory_drill, bool paused);

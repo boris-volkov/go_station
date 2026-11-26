@@ -1137,6 +1137,21 @@ void Renderer::render_player_labels(const BoardView& view, const DrawState& ds) 
     draw_text(tx, bot_y + th + line_gap,  line2_sc, wpstr, w_clock_color);
     if (w_pris[0])
         draw_text(tx, bot_y + line3_y,    scale,    w_pris, prisoner_color);
+
+    // End-position thumbnail in the gap between the two labels, centred in the
+    // gutter. Skipped when the gap is too small to show at least 3px per point.
+    if (ds.end_thumb) {
+        int bs     = ds.active_board_size;
+        int gap_t  = top_y + block_h;
+        int gap_b  = bot_y;
+        int vpad   = std::max(margin * 2, (gap_b - gap_t) / 10);
+        int size   = std::min(right_x1 - right_x0, gap_b - gap_t - vpad * 2) * 3 / 4;
+        if (size >= bs * 3) {
+            int x = right_x0 + (right_x1 - right_x0 - size) / 2;
+            int y = gap_t + (gap_b - gap_t - size) / 2;
+            render_mini_board(x, y, size, ds.end_thumb, bs, view.orient);
+        }
+    }
 }
 
 void Renderer::render_game_date(const BoardView& view, const std::string& date) {
@@ -1398,12 +1413,25 @@ void Renderer::render_help_overlay(const BoardView& view, bool show_help, bool l
 
 void Renderer::render_mini_board(int x, int y, int size,
                                   const char board[][BOARD_SIZE], int board_size) {
+    mini_board_impl<BOARD_SIZE>(x, y, size, board, board_size, 0);
+}
+
+void Renderer::render_mini_board(int x, int y, int size,
+                                  const char board[][MAX_BOARD_SIZE], int board_size, int orient) {
+    mini_board_impl<MAX_BOARD_SIZE>(x, y, size, board, board_size, orient);
+}
+
+template <int N>
+void Renderer::mini_board_impl(int x, int y, int size, const char (*board)[N],
+                               int board_size, int orient) {
     // Background
     SDL_Rect bg = {x, y, size, size};
     SDL_SetRenderDrawColor(sdl, Palette::BOARD.r, Palette::BOARD.g, Palette::BOARD.b, 255);
     SDL_RenderFillRect(sdl, &bg);
 
-    int sq  = size / board_size;                    // pixels per intersection
+    // One extra cell of spacing leaves half a cell of board showing beyond the
+    // edge stones on every side, like the main board's margin.
+    int sq  = size / (board_size + 1);              // pixels per intersection
     if (sq < 1) sq = 1;
     int margin = (size - board_size * sq) / 2;      // center the grid in the box
     int px0 = x + margin + sq / 2;                 // top-left intersection (x)
@@ -1428,12 +1456,20 @@ void Renderer::render_mini_board(int x, int y, int size,
         for (int col = 0; col < board_size; col++) {
             int cell = board[row][col];
             if (cell == 0) continue;
-            int cx = px0 + col * sq;
-            int cy = py0 + row * sq;
+            // Same transform as orient_to_display, so the thumbnail matches the board
+            int dr = row, df = col;
+            if (orient & ORIENT_TRANSPOSE) { dr = col; df = row; }
+            if (orient & ORIENT_FLIP_H)    df = board_size - 1 - df;
+            if (orient & ORIENT_FLIP_V)    dr = board_size - 1 - dr;
+            int cx = px0 + df * sq;
+            int cy = py0 + dr * sq;
             bool is_black = (cell == 1);
             SDL_Color c = is_black ? Palette::STONE_BLACK : Palette::STONE_WHITE;
             SDL_SetRenderDrawColor(sdl, c.r, c.g, c.b, 255);
-            fill_circle(cx, cy, r_stone);
+            // Thumbnails always use octagon tiles, whatever the board's stone style:
+            // at radius sq/2 they tessellate edge to edge and read better than
+            // circles at a few pixels per point.
+            fill_octagon(cx, cy, r_stone);
         }
     }
 }
@@ -3268,6 +3304,11 @@ uint64_t Renderer::compute_cache_hash(const DrawState& ds) const {
     mix_str(ds.result_message);
     mix_str(ds.game_date);
     mix_str(ds.game_comment);
+    mix8(uint8_t(ds.end_thumb != nullptr));
+    if (ds.end_thumb)
+        for (int r = 0; r < ds.active_board_size; r++)
+            for (int f = 0; f < ds.active_board_size; f++)
+                mix8(uint8_t(ds.end_thumb[r][f]));
 
     // Speed message: hash whether it is currently visible (and the delay value)
     Uint32 now = SDL_GetTicks();

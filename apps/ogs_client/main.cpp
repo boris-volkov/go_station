@@ -7928,6 +7928,12 @@ Renderer::DrawState App::make_ds() {
         .catalog_thumb_open     = thumb_valid_ ? thumb_open_  : nullptr,
         .catalog_thumb_final    = thumb_valid_ ? thumb_final_ : nullptr,
         .catalog_thumb_board_size = thumb_board_size_,
+        // Post-game review: the game's final position beside the board, so the
+        // whole-game picture stays in view while stepping through it. Hidden in
+        // guess mode, where it would give away where the stones end up.
+        .end_thumb              = (state_ == AppState::GAME_OVER && analysis_cur_ &&
+                                   !guess_mode_ && game_.history.size() > 1)
+                                      ? game_.history.back().board : nullptr,
         .flash_message          = flash_,
         .flash_message_until    = flash_until_,
         .save_input_step        = 0,
